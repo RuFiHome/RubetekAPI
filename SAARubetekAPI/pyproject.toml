@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "RubetekAPI"
+name = "SAARubetekAPI"
 version = "0.0.1"
 description = "A Python library for the Rubetek API – control smart home devices, manage scenes, get device status, and automate your Rubetek ecosystem"
 readme = "README.md"
