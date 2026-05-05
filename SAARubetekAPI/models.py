@@ -60,10 +60,10 @@ class Device(BaseModel):
     id: str
     natural_id: str
     type: str
-    updated_at: Optional[datetime]
+    updated_at: Optional[datetime] = None
     name: Optional[str] = None
     room: Optional[str] = None
-    last_activity: Optional[datetime]
+    last_activity: Optional[datetime] = None
     state: DeviceState
 
     @model_validator(mode="before")
