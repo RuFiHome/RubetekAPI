@@ -4,8 +4,6 @@ import logging
 import ssl
 import secrets
 import string
-import aiohttp
-
 from types import SimpleNamespace
 
 from .logger import SafeLogger
@@ -76,24 +74,38 @@ class SAARubetekAPI:
             # Default INFO
             self.__logger.setLevel(logging.INFO)
 
-        self.refresh_token: Optional[str] = refresh_token
-        self.refresh_token_file: Optional[Path] = refresh_token_file
-        self.save_token_file: Optional[bool] = save_token_file
-        self.enabledCaptcha: Optional[bool] = enabledCaptcha
-        self.sslEnabled: Optional[bool] = sslEnabled
-        self.timeout: Optional[int] = timeout
-        self.retry_count: Optional[int] = retry_count
-        self.retry_timeout_ms: Optional[int] = retry_timeout_ms
-        self.device_id: Optional[str] = device_id or self.generate_device_uid()
+        self.refresh_token = refresh_token
+        self.refresh_token_file = refresh_token_file
+        self.save_token_file = save_token_file
+        self.enabledCaptcha = enabledCaptcha
+        self.sslEnabled = sslEnabled
+        self.timeout = timeout
+        self.retry_count = retry_count
+        self.retry_timeout_ms = retry_timeout_ms
+        self.device_id = device_id or self.generate_device_uid()
+        self.session: Optional[ClientSession] = None
+
+        self.__logger.debug(f"Initialization done. Items=({', '.join(f'{k}={v}' for k, v in vars(self).items())})")
+
+    async def _ensure_session(self) -> ClientSession:
+        if self.session and not self.session.closed:
+            return self.session
 
         if self.sslEnabled:
             ssl_context = ssl.create_default_context(cafile=certifi.where())
-            self.session: ClientSession = ClientSession(connector=TCPConnector(ssl=ssl_context), timeout=ClientTimeout(total=timeout))
+            self.session = ClientSession(connector=TCPConnector(ssl=ssl_context), timeout=ClientTimeout(total=self.timeout))
         else:
-            connector = aiohttp.TCPConnector(ssl=False)
-            self.session: ClientSession = aiohttp.ClientSession(connector=connector)
+            connector = TCPConnector(ssl=False)
+            self.session = ClientSession(connector=connector, timeout=ClientTimeout(total=self.timeout))
 
-        self.__logger.debug(f"Initialization done. Items=({', '.join(f'{k}={v}' for k, v in vars(self).items())})")
+        return self.session
+
+    async def __aenter__(self):
+        await self._ensure_session()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
     async def send_request(self, url: str,
                            method: str = "GET",
@@ -101,7 +113,8 @@ class SAARubetekAPI:
                            params: Dict[str, Any] = None,
                            json_data: Dict[str, Any] = None,
                            name: str = "UNKNOWN",
-                           request_uid: Optional[str] = None):
+                           request_uid: Optional[str] = None,
+                           refresh_on_unauthorized: bool = True):
 
         headers = headers or {}
         params = params or {}
@@ -111,13 +124,15 @@ class SAARubetekAPI:
             request_uid = uuid4().hex
 
         attempt = 0
+        last_error: Optional[Exception] = None
 
         while attempt < self.retry_count:
             _headers = self.default_headers(headers)
             self.__logger.info('[%s] Request=%s method=%s url=%s params=%s json=%s headers=%s',
                                name, request_uid, method, url, params, json_data, _headers)
             try:
-                async with self.session.request(method, url, params=params, json=json_data, headers=_headers) as response:
+                session = await self._ensure_session()
+                async with session.request(method, url, params=params, json=json_data, headers=_headers) as response:
                     try:
                         json_response = await response.json() if response.status == 200 else {}
                     except (JSONDecodeError, ContentTypeError) as e:
@@ -146,13 +161,21 @@ class SAARubetekAPI:
                 self.__logger.error('[%s] Response=%s ClientConnectorRubetekAPIError', name, request_uid)
                 raise ClientConnectorRubetekAPIError('Client connector error')
             except DDosRubetekAPIError:
+                last_error = DDosRubetekAPIError("429 DDoS")
                 await asyncio.sleep((self.retry_timeout_ms / 1000) * attempt)
             except UnauthorizedRubetekAPIError as error:
+                if not refresh_on_unauthorized:
+                    raise
+                last_error = error
                 self.__logger.warning("[%s] The token may have expired. Get a new one")
                 await self.refresh_tokens(request_uid = request_uid)
                 await asyncio.sleep((self.retry_timeout_ms / 1000) * attempt)
             finally:
                 attempt += 1
+
+        if last_error is not None:
+            raise last_error
+        raise UnknownRubetekAPIError("Request failed after all retry attempts")
 
     @staticmethod
     def generate_device_uid() -> str:
@@ -219,7 +242,7 @@ class SAARubetekAPI:
             'Content-Type': 'application/json; charset=UTF-8',
             'User-Agent': 'okhttp/4.12.0'
         }
-        response = await self.send_request(url=url, method='POST', headers=headers, params=params, name="AUTHORIZATION.STEP_1")
+        response = await self.send_request(url=url, method='POST', headers=headers, params=params, name="AUTHORIZATION.STEP_1", refresh_on_unauthorized=False)
         token = SimpleNamespace(**response)
         self.__logger.debug("IOT: %s", token)
 
@@ -232,7 +255,7 @@ class SAARubetekAPI:
         }
 
         self.__logger.debug("Get refresh token and access token...")
-        response = await self.send_request(url=url, method='POST', json_data=payload, name="AUTHORIZATION.STEP_2")
+        response = await self.send_request(url=url, method='POST', json_data=payload, name="AUTHORIZATION.STEP_2", refresh_on_unauthorized=False)
         token = SimpleNamespace(**response)
         self.access_token = getattr(token, 'access_token', None)
         self.save_refresh_token(refresh_token=getattr(token, 'refresh_token', None))
@@ -267,7 +290,7 @@ class SAARubetekAPI:
             'grant_type': 'refresh_token',
             'refresh_token': self.refresh_token
         }
-        response = await self.send_request(url=url, method='POST', json_data=payload, name="REFRESH_ACCESS_TOKEN", request_uid=request_uid)
+        response = await self.send_request(url=url, method='POST', json_data=payload, name="REFRESH_ACCESS_TOKEN", request_uid=request_uid, refresh_on_unauthorized=False)
         token = SimpleNamespace(**response)
         self.__logger.debug("Access token updated")
         self.access_token = getattr(token, 'access_token', None)
@@ -283,7 +306,7 @@ class SAARubetekAPI:
         payload = {
             'client_id': self.__client_id
         }
-        response = await self.send_request(url=url, method='POST', json_data=payload, headers=headers, name="REFRESH_IOT_ACCESS_TOKEN", request_uid=request_uid)
+        response = await self.send_request(url=url, method='POST', json_data=payload, headers=headers, name="REFRESH_IOT_ACCESS_TOKEN", request_uid=request_uid, refresh_on_unauthorized=False)
         token = SimpleNamespace(**response)
         self.__logger.debug("IoT Access token updated")
         self.iot_access_token = getattr(token, 'access_token', None)
@@ -349,5 +372,5 @@ class SAARubetekAPI:
         return [Intercom(**c) for c in response]
 
     async def close(self):
-        if not self.session.closed:
+        if self.session and not self.session.closed:
             await self.session.close()
