@@ -333,10 +333,10 @@ class SAARubetekAPI:
         response = await self.send_request(url=url, params=params, headers=headers, name="GET_CAMERAS")
         return [Camera(**c) for c in response]
 
-    async def get_camera(self, device_id: str) -> Optional[Camera]:
-        devices = await self.get_devices()
-        device = next((d for d in devices if d.id == device_id), None)
-        return device
+    async def get_camera(self, camera_id: str) -> Optional[Camera]:
+        cameras = await self.get_cameras()
+        camera = next((d for d in cameras if d.id == camera_id), None)
+        return camera
 
     async def get_intercoms(self):
         if self.house_id is None:
