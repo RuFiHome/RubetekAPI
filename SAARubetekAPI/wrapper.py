@@ -4,6 +4,7 @@ import logging
 import ssl
 import secrets
 import string
+import aiohttp
 
 from types import SimpleNamespace
 
@@ -146,12 +147,10 @@ class SAARubetekAPI:
                 raise ClientConnectorRubetekAPIError('Client connector error')
             except DDosRubetekAPIError:
                 await asyncio.sleep((self.retry_timeout_ms / 1000) * attempt)
-                continue
             except UnauthorizedRubetekAPIError as error:
                 self.__logger.warning("[%s] The token may have expired. Get a new one")
                 await self.refresh_tokens(request_uid = request_uid)
                 await asyncio.sleep((self.retry_timeout_ms / 1000) * attempt)
-                continue
             finally:
                 attempt += 1
 
