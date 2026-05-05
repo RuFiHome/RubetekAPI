@@ -36,7 +36,7 @@ from contextlib import suppress
 from .models import User, House, Intercom, Device, Camera
 
 
-class RubetekAPI:
+class SAARubetekAPI:
     __iot_url: str = "https://iot.rubetek.com/"
     __base_url: str = "https://ccc.rubetek.com/"
     __client_id: str = "ckvfvkClm2IdPrkSlvWSe3KiEWJOAbyKOQR5giCYYAo" # Harcode
