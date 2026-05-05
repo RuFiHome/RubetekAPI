@@ -85,6 +85,8 @@ class SAARubetekAPI:
         self.retry_timeout_ms: Optional[int] = retry_timeout_ms
         self.device_id: Optional[str] = device_id or self.generate_device_uid()
 
+        self.session = None
+
         self.__logger.debug(f"Initialization done. Items=({', '.join(f'{k}={v}' for k, v in vars(self).items())})")
 
     async def _ensure_session(self) -> ClientSession:
@@ -373,3 +375,4 @@ class SAARubetekAPI:
     async def close(self):
         if self.session and not self.session.closed:
             await self.session.close()
+            self.session = None
