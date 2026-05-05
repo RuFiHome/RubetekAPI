@@ -1,1 +1,1 @@
-from .wrapper import RubetekAPI
+from .wrapper import SAARubetekAPI
