@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "SAARubetekAPI"
+version = "0.0.1"
+description = "A Python library for the Rubetek API – control smart home devices, manage scenes, get device status, and automate your Rubetek ecosystem"
+readme = "README.md"
+authors = [{ name = "AlexVot", email = "your@email.com" }]
+requires-python = ">=3.10"
+
+dependencies = [
+    "aiohttp>=3.8.0",
+    "pydantic>=2.0.0",
+    "certifi>=2023.7.22"
+]
