@@ -1,8 +1,8 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]  # запуск при публикации релиза на GitHub
+#  release:
+#    types: [published]  # запуск при публикации релиза на GitHub
   workflow_dispatch:    # ручной запуск
 
 jobs:
@@ -28,6 +28,3 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-        # Для TestPyPI раскомментируйте:
-        # repository-url: https://test.pypi.org/legacy/
