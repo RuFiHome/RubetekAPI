@@ -116,7 +116,30 @@ class SAARubetekAPI:
                            name: str = "UNKNOWN",
                            request_uid: Optional[str] = None,
                            refresh_on_unauthorized: bool = True):
+        """Send an HTTP request to the Rubetek API with automatic retries and error handling.
 
+        Handles token refresh on 401, exponential backoff on 429 (rate limiting),
+        and raises the appropriate RubetekAPIError subclass on failure.
+
+        Args:
+            url: Full request URL.
+            method: HTTP method (default "GET").
+            headers: Additional request headers merged with the defaults.
+            params: URL query parameters.
+            json_data: JSON payload sent in the request body.
+            name: Human-readable name of the request (used in logs).
+            request_uid: Unique request identifier (generated if not provided).
+            refresh_on_unauthorized: Whether to refresh tokens automatically on a 401 response.
+
+        Returns:
+            Parsed JSON response body on success.
+
+        Raises:
+            TimeoutRubetekAPIError: If the request times out.
+            ClientConnectorRubetekAPIError: If a connection-level error occurs.
+            DDosRubetekAPIError: If the request keeps failing due to rate limiting (429).
+            UnknownRubetekAPIError: For any other unsuccessful response or when retries are exhausted.
+        """
         headers = headers or {}
         params = params or {}
         json_data = json_data or {}
@@ -168,7 +191,7 @@ class SAARubetekAPI:
                 if not refresh_on_unauthorized:
                     raise
                 last_error = error
-                self.__logger.warning("[%s] The token may have expired. Get a new one")
+                self.__logger.warning("[%s] The token may have expired. Get a new one", name, request_uid)
                 await self.refresh_tokens(request_uid = request_uid)
                 await asyncio.sleep((self.retry_timeout_ms / 1000) * attempt)
             finally:
@@ -180,11 +203,29 @@ class SAARubetekAPI:
 
     @staticmethod
     def generate_device_uid() -> str:
+        """Generate a cryptographically random device UID (16 alphanumeric characters).
+
+        Used as the "Device-Client-UID" header value to emulate a unique client device.
+
+        Returns:
+            A random 16-character string of letters and digits.
+        """
         charset = string.ascii_letters + string.digits
         device_id = ''.join(secrets.choice(charset) for _ in range(16))
         return device_id
 
     def default_headers(self, new_headers: dict | None = None) -> dict:
+        """Build the default set of HTTP headers used for API requests.
+
+        The defaults mimic the official Rubetek Android app (User-Agent "okhttp/",
+        device identity, locale). Provided headers are merged on top of the defaults.
+
+        Args:
+            new_headers: Optional extra headers to merge into the defaults.
+
+        Returns:
+            A dict of merged request headers.
+        """
         headers = {
             "Content-Type": "application/json; charset=UTF-8",
             "Device-Client-UID": self.device_id,
@@ -198,6 +239,20 @@ class SAARubetekAPI:
         return headers
 
     async def authentication(self, email: str = None, phone: str = None, method: str = "flash_call"):
+        """Request a verification code sent to the user's email or phone.
+
+        Exactly one of ``email`` or ``phone`` must be provided. The code is delivered
+        via email, SMS, or a flash call depending on ``method``.
+
+        Args:
+            email: User's email address.
+            phone: User's phone number.
+            method: Delivery method: "email", "sms", or "flash_call" (default "flash_call").
+                Flash call uses a 4-digit code, other methods use a 6-digit code.
+
+        Raises:
+            ValueError: If both or neither ``email`` and ``phone`` are provided.
+        """
         length_code = 4 if method == "flash_call" and email is None else 6
 
         if not ((email is not None) ^ (phone is not None)):
@@ -223,6 +278,22 @@ class SAARubetekAPI:
         await self.send_request(url=url, method='POST', json_data=payload, headers=headers, name="AUTHENTICATION")
 
     async def authorization(self, code: Union[int, str], email: Optional[str] = None, phone: Optional[str] = None):
+        """Exchange a verification code for API tokens (two-step authorization).
+
+        Performs a full authorization flow: first obtains an IoT token, then builds
+        the access token and refresh token via the CCC API. The refresh token is saved.
+
+        Args:
+            code: The verification code received via ``authentication``.
+            email: User's email address (mutually exclusive with ``phone``).
+            phone: User's phone number (mutually exclusive with ``email``).
+
+        Returns:
+            A tuple ``(refresh_token, access_token, iot_access_token)``.
+
+        Raises:
+            ValueError: If both or neither ``email`` and ``phone`` are provided.
+        """
         if not ((email is not None) ^ (phone is not None)):
             raise ValueError('Either "email" or "phone" must be provided.')
 
@@ -264,6 +335,14 @@ class SAARubetekAPI:
 
 
     def save_refresh_token(self, refresh_token):
+        """Persist the refresh token to the configured file and update the in-memory value.
+
+        Skips file writing when ``save_token_file`` is falsy or no ``refresh_token_file``
+        is set.
+
+        Args:
+            refresh_token: The new refresh token string to store.
+        """
         if self.refresh_token_file and self.save_token_file:
             with open(self.refresh_token_file, 'w', encoding='utf-8') as f:
                 f.write(refresh_token)
@@ -273,6 +352,20 @@ class SAARubetekAPI:
         self.refresh_token = refresh_token
 
     async def refresh_tokens(self, request_uid: str=None):
+        """Refresh the access and IoT access tokens using the stored refresh token.
+
+        Loads the refresh token from the configured file if it is not already in memory,
+        then reissues both access tokens.
+
+        Args:
+            request_uid: Unique request identifier propagated to downstream calls (for logs).
+
+        Returns:
+            A tuple ``(refresh_token, access_token, iot_access_token)``.
+
+        Raises:
+            AuthorizationRequiredRubetekAPIError: If no refresh token is available.
+        """
         if not self.refresh_token and self.refresh_token_file and self.save_token_file:
             with suppress(FileNotFoundError):
                 with open(self.refresh_token_file, encoding='utf-8') as f:
@@ -285,6 +378,14 @@ class SAARubetekAPI:
         return self.refresh_token, self.access_token, self.iot_access_token
 
     async def get_access_token(self, request_uid: str = None) -> str:
+        """Obtain a fresh access token by exchanging the stored refresh token.
+
+        Args:
+            request_uid: Unique request identifier propagated to the downstream call (for logs).
+
+        Returns:
+            The newly issued access token.
+        """
         url = urljoin(self.__base_url, 'v5/oauth/access_token')
         payload = {
             'client_id': 'rubetek_android',
@@ -299,6 +400,14 @@ class SAARubetekAPI:
         return self.access_token
 
     async def get_iot_access_token(self, request_uid: str = None) -> str:
+        """Obtain a fresh IoT access token used for the Rubetek IoT API.
+
+        Args:
+            request_uid: Unique request identifier propagated to the downstream call (for logs).
+
+        Returns:
+            The newly issued IoT access token.
+        """
         url = urljoin(self.__base_url, 'v5/iot/auth_token')
         headers = {
             "Authorization": f"Bearer {self.access_token}",
@@ -314,6 +423,11 @@ class SAARubetekAPI:
         return self.iot_access_token
 
     async def get_user(self) -> User:
+        """Fetch the profile of the currently authorized user.
+
+        Returns:
+            A :class:`User` model describing the authenticated user.
+        """
         url = urljoin(self.__base_url, 'v5/user')
         headers = {
             "Authorization": f"Bearer {self.access_token}"
@@ -322,6 +436,11 @@ class SAARubetekAPI:
         return User(**response)
 
     async def get_homes(self):
+        """Fetch all houses (homes) associated with the account.
+
+        Returns:
+            A list of :class:`House` models.
+        """
         url = urljoin(self.__base_url, 'v6/houses')
         headers = {
             "Authorization": f"Bearer {self.access_token}"
@@ -331,6 +450,16 @@ class SAARubetekAPI:
 
 
     async def get_devices(self):
+        """Fetch the devices of the current house (excluding cameras).
+
+        Requires ``house_id`` to be set beforehand.
+
+        Returns:
+            A list of :class:`Device` models.
+
+        Raises:
+            ValueError: If ``house_id`` is not set.
+        """
         if self.house_id is None:
             raise ValueError("House ID not set")
         url = urljoin(self.__iot_url, f'api/personal/v1/homes/{self.house_id}/devices')
@@ -342,11 +471,29 @@ class SAARubetekAPI:
         return [Device(**d) for d in response]
 
     async def get_device(self, device_id: str) -> Optional[Device]:
+        """Find a specific device in the current house by its ID.
+
+        Args:
+            device_id: The device identifier to search for.
+
+        Returns:
+            The matching :class:`Device` model or ``None`` if not found.
+        """
         devices = await self.get_devices()
         device = next((d for d in devices if d.id == device_id), None)
         return device
 
     async def get_cameras(self):
+        """Fetch the security cameras of the current house.
+
+        Requires ``house_id`` to be set beforehand.
+
+        Returns:
+            A list of :class:`Camera` models.
+
+        Raises:
+            ValueError: If ``house_id`` is not set.
+        """
         if self.house_id is None:
             raise ValueError("House ID not set")
         url = urljoin(self.__iot_url, f'api/personal/v1/homes/{self.house_id}/devices')
@@ -358,11 +505,29 @@ class SAARubetekAPI:
         return [Camera(**c) for c in response]
 
     async def get_camera(self, camera_id: str) -> Optional[Camera]:
+        """Find a specific camera in the current house by its ID.
+
+        Args:
+            camera_id: The camera identifier to search for.
+
+        Returns:
+            The matching :class:`Camera` model or ``None`` if not found.
+        """
         cameras = await self.get_cameras()
         camera = next((d for d in cameras if d.id == camera_id), None)
         return camera
 
     async def get_intercoms(self):
+        """Fetch the intercom (relay) devices of the current house.
+
+        Requires ``house_id`` to be set beforehand.
+
+        Returns:
+            A list of :class:`Intercom` models.
+
+        Raises:
+            ValueError: If ``house_id`` is not set.
+        """
         if self.house_id is None:
             raise ValueError("House ID not set")
         url = urljoin(self.__iot_url, f'api/personal/v1/homes/{self.house_id}/relays')
@@ -372,7 +537,70 @@ class SAARubetekAPI:
         response = await self.send_request(method='GET', url=url, headers=headers, name="GET_INTERCOMS")
         return [Intercom(**c) for c in response]
 
+    async def get_webrtc_token(self, relay_id: int) -> str:
+        """Obtain a WebRTC signaling token for a given intercom (relay).
+
+        The token is required to start a WebRTC session with the device.
+
+        Args:
+            relay_id: Numeric id of the intercom (relay) device.
+
+        Returns:
+            The WebRTC token string.
+        """
+        url = urljoin(self.__iot_url, f'api/personal/v1/relays/{relay_id}/webrtc_token')
+        headers = {
+            "Authorization": f"Bearer {self.iot_access_token}"
+        }
+        response = await self.send_request(url=url, headers=headers, name="GET_WEBRTC_TOKEN")
+        token = response.get('token') if isinstance(response, dict) else None
+        if not token:
+            raise UnknownRubetekAPIError(f'Empty webrtc_token for relay {relay_id}: {response}')
+        return token
+
+    async def create_web_rtc_viewer(self, relay_id: int,
+                                    webrtc_token: str = None,
+                                    on_track=None):
+        """Create a WebRTC video viewer for an intercom (without starting it).
+
+        The returned :class:`WebRTCViewer` must be started explicitly via
+        ``await viewer.open()``. Requires the extra dependency ``aiortc``
+        (and ``websockets``) to be installed.
+
+        Args:
+            relay_id: Numeric id of the intercom (relay) device.
+            webrtc_token: Optional pre-fetched WebRTC token.
+            on_track: Optional callback invoked when a media track is received.
+
+        Returns:
+            A configured :class:`WebRTCViewer` instance.
+        """
+        from .webrtc import WebRTCViewer
+        viewer = WebRTCViewer(api=self, relay_id=relay_id, webrtc_token=webrtc_token)
+        if on_track is not None:
+            viewer.on_track = on_track
+        return viewer
+
+    async def watch_video(self, relay_id: int, on_track=None):
+        """Open a WebRTC video session with an intercom and keep it alive.
+
+        Convenience wrapper that creates a :class:`WebRTCViewer` and immediately
+        opens the connection. The returned coroutine keeps the session open until
+        the viewer is closed. Use ``create_web_rtc_viewer`` when you need more
+        control over the lifecycle.
+
+        Args:
+            relay_id: Numeric id of the intercom (relay) device.
+            on_track: Optional callback invoked when a media track is received.
+
+        Returns:
+            A task that holds open the :class:`WebRTCViewer` session.
+        """
+        viewer = await self.create_web_rtc_viewer(relay_id, on_track=on_track)
+        return viewer
+
     async def close(self):
+        """Close the underlying HTTP session and release its resources."""
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
