@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rubetek · HACS-like панель</title>
+<style>
+  :root {
+    --bg: #12151b;
+    --panel: #1b202a;
+    --panel2: #232a37;
+    --border: #2e3747;
+    --text: #e6eaf2;
+    --muted: #8b94a6;
+    --accent: #2b9bd8;
+    --accent2: #23c48e;
+    --danger: #e05a5a;
+    --off: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, #22304a 0%, var(--bg) 55%) fixed;
+    color: var(--text); min-height: 100vh;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .topbar {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 24px; background: transparent; border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+  .brand .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent2); box-shadow: 0 0 12px var(--accent2); }
+  .spacer { flex: 1; }
+  .status { font-size: 12px; color: var(--muted); }
+
+  .layout { display: flex; gap: 20px; padding: 20px 24px; align-items: flex-start; flex-wrap: wrap; }
+  .sidebar {
+    flex: 0 0 300px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; min-width: 280px;
+  }
+  .main { flex: 1 1 480px; min-width: 320px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+
+  h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  .hsep { height: 1px; background: var(--border); margin: 16px 0; }
+
+  select {
+    width: 100%; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text); font-size: 14px; outline: none;
+  }
+  select:focus { border-color: var(--accent); }
+
+  .list-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 8px; }
+  .list-head h3 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .badge { font-size: 11px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); border-radius: 20px; padding: 1px 8px; }
+
+  ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  li.item {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 9px;
+    background: var(--panel2); border: 1px solid var(--border); cursor: pointer; transition: .15s;
+  }
+  li.item:hover { border-color: var(--accent); transform: translateX(2px); }
+  li.item.sel { border-color: var(--accent); background: #233043; }
+  li.item .icon { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-size: 15px; background: #273142; flex: none; }
+  li.item .meta { overflow: hidden; }
+  li.item .t { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  li.item .s { font-size: 11.5px; color: var(--muted); }
+  .off-status { margin-left: auto; font-size: 11px; padding: 2px 7px; border-radius: 20px; flex: none; }
+  .s-on { color: var(--accent2); background: rgba(35,196,142,.12); }
+  .s-off { color: var(--danger); background: rgba(224,90,90,.12); }
+  .s-unk { color: var(--muted); background: rgba(139,148,166,.12); }
+
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 2px; }
+
+  /* info panel */
+  #detailTitle { font-size: 19px; margin: 0 0 4px; font-weight: 600; }
+  #detailSub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  table.kv { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.kv td { padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  table.kv td:first-child { color: var(--muted); width: 42%; }
+  .chip { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; background: var(--panel2); border: 1px solid var(--border); }
+
+  /* video */
+  .video-wrap { margin-top: 18px; }
+  video { width: 100%; max-height: 60vh; background: #000; border-radius: 10px; }
+  .vid-msg { padding: 14px; border-radius: 10px; background: var(--panel2); border: 1px dashed var(--border); color: var(--muted); font-size: 13px; }
+
+  .btnrow { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  button {
+    padding: 9px 16px; border-radius: 9px; border: none; cursor: pointer; font-size: 13.5px; font-weight: 500;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover { border-color: var(--accent); }
+
+  .spinner { display:none; width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; margin-left:8px;}
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading .spinner { display:inline-block; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> Rubetek · HACS-like</div>
+    <div class="spacer"></div>
+    <div class="status" id="authStatus">Загрузка…</div>
+  </div>
+
+  <div class="layout">
+    <!-- ===================== SIDEBAR ===================== -->
+    <aside class="sidebar">
+      <h2>Дом</h2>
+      <select id="houseSelect" disabled>
+        <option value="">— выберите дом —</option>
+      </select>
+
+      <div class="hsep"></div>
+
+      <div class="list-head"><h3>Устройства</h3><span class="badge" id="devCount">0</span></div>
+      <ul id="deviceList"><li class="empty">Выберите дом</li></ul>
+
+      <div class="list-head"><h3>Камеры</h3><span class="badge" id="camCount">0</span></div>
+      <ul id="cameraList"><li class="empty">Выберите дом</li></ul>
+
+      <div class="list-head"><h3>Домофоны</h3><span class="badge" id="icomCount">0</span></div>
+      <ul id="intercomList"><li class="empty">Выберите дом</li></ul>
+    </aside>
+
+    <!-- ===================== MAIN ===================== -->
+    <main class="main">
+      <div id="placeholder" class="vid-msg">Выберите устройство, камеру или домофон слева, чтобы посмотреть детали и видео.</div>
+
+      <div id="detail" style="display:none">
+        <h3 id="detailTitle"></h3>
+        <div id="detailSub"></div>
+        <table class="kv" id="detailTable"></table>
+
+        <div class="video-wrap">
+          <div id="vidMsg" class="vid-msg">Видео недоступно.</div>
+          <video id="video" autoplay muted playsinline controls style="display:none"></video>
+          <canvas id="snapCanvas" style="display:none;width:100%;border-radius:10px;background:#000"></canvas>
+          <img id="snapImg" style="display:none;width:100%;border-radius:10px;background:#000" alt="snapshot"/>
+        </div>
+
+        <div class="btnrow" id="ctrlRow" style="display:none">
+          <button class="btn-ghost" id="btnMute">🔇 Отключить звук</button>
+          <button class="btn-ghost" id="btnFull">⛶ На весь экран</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+let houses = [];
+let currentSelection = null; // {scope:'device'|'camera'|'intercom', id, name}
+let activeStream = null;     // ключ активного потока (intercom:<id>)
+// полные данные устройств/камер/домофонов текущего дома (для инфо-панели)
+let devicesById = {};
+let camerasById = {};
+let intercomsById = {};
+
+const DEFAULT_MUTED = true;
+
+// ---------------------------------------------------------------- helpers
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || (res.status + ' ' + res.statusText));
+  return data;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function statusClass(s) {
+  s = (s||'').toLowerCase();
+  if (!s || s === 'offline') return 's-off';
+  return 's-on';
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function iso(t) { return t ? new Date(t).toLocaleString('ru-RU') : '—'; }
+function bool(v) { return v ? 'да' : 'нет'; }
+
+// ---------------------------------------------------------------- houses
+async function loadHouses() {
+  try {
+    houses = await api('/api/houses');
+    $('authStatus').textContent = 'Авторизовано · домов: ' + houses.length;
+    const sel = $('houseSelect');
+    sel.innerHTML = '<option value="">— выберите дом —</option>' +
+      houses.map(h => `<option value="${esc(h.id)}">${esc(h.name)}${h.address ? ' · ' + esc(h.address) : ''}</option>`).join('');
+    sel.disabled = false;
+    $('placeholder').textContent = 'Выберите дом в списке, затем устройство/камеру/домофон.';
+  } catch (e) {
+    $('authStatus').textContent = 'Ошибка: ' + e.message;
+  }
+}
+
+async function loadHouseContent(houseId) {
+  // грузим три набора данных параллельно
+  const [devices, cameras, intercoms] = await Promise.all([
+    api('/api/devices?house_id=' + encodeURIComponent(houseId)),
+    api('/api/cameras?house_id=' + encodeURIComponent(houseId)),
+    api('/api/intercoms?house_id=' + encodeURIComponent(houseId)),
+  ]);
+  renderDevices(devices);
+  renderCameras(cameras);
+  renderIntercoms(intercoms);
+  $('placeholder').textContent = 'Дом загружен. Выберите устройство, камеру или домофон слева.';
+}
+
+function renderDevices(list) {
+  $('devCount').textContent = list.length;
+  devicesById = {};
+  const ul = $('deviceList');
+  ul.innerHTML = '';
+  if (!list.length) { ul.appendChild(el('li', 'empty', 'Нет устройств')); return; }
+  for (const d of list) {
+    devicesById[d.id] = d;
+    const li = el('li', 'item');
+    li.dataset.scope='device'; li.dataset.id=d.id; li.dataset.name=d.name||d.id;
+    li.appendChild(el('span','icon','📟'));
+    const meta = el('div','meta');
+    meta.appendChild(el('div','t', d.name || d.id));
+    const sub = [d.type, d.room && ('📌 '+d.room)].filter(Boolean).join(' · ');
+    meta.appendChild(el('div','s', sub));
+    li.appendChild(meta);
+    // значение (current_value) с юнитами, если есть
+    const val = (d.current_value!=null && d.current_value!=='') ? (d.current_value) : null;
+    if (val) li.appendChild(el('span','s', val));
+    li.appendChild(el('span','off-status ' + statusClass(d.status), d.status || '—'));
+    ul.appendChild(li);
+  }
+}
+
+function renderCameras(list) {
+  $('camCount').textContent = list.length;
+  camerasById = {};
+  const ul = $('cameraList');
+  ul.innerHTML = '';
+  if (!list.length) { ul.appendChild(el('li', 'empty', 'Нет камер')); return; }
+  for (const d of list) {
+    camerasById[d.id] = d;
+    const li = el('li', 'item');
+    li.dataset.scope='camera'; li.dataset.id=d.id; li.dataset.name=d.name||d.id;
+    li.appendChild(el('span','icon','📷'));
+    const meta = el('div','meta');
+    meta.appendChild(el('div','t', d.name || d.id));
+    meta.appendChild(el('div','s', 'Камера'));
+    li.appendChild(meta);
+    li.appendChild(el('span','off-status ' + statusClass(d.status), d.status || '—'));
+    ul.appendChild(li);
+  }
+}
+
+function renderIntercoms(list) {
+  $('icomCount').textContent = list.length;
+  intercomsById = {};
+  const ul = $('intercomList');
+  ul.innerHTML = '';
+  if (!list.length) { ul.appendChild(el('li', 'empty', 'Нет домофонов')); return; }
+  for (const d of list) {
+    intercomsById[d.id] = d;
+    const li = el('li', 'item');
+    li.dataset.scope='intercom'; li.dataset.id=d.id; li.dataset.name=d.name||('Домофон '+d.id);
+    li.appendChild(el('span','icon','🔔'));
+    const meta = el('div','meta');
+    meta.appendChild(el('div','t', d.name || ('Домофон '+d.id)));
+    const webrtc = d.webrtc_supported ? 'WebRTC ✓' : 'WebRTC ✗';
+    meta.appendChild(el('div','s', webrtc));
+    li.appendChild(meta);
+    li.appendChild(el('span','off-status ' + statusClass(d.status), d.status || '—'));
+    ul.appendChild(li);
+  }
+}
+
+// ---------------------------------------------------------------- lists events
+document.getElementById('houseSelect').addEventListener('change', e => {
+  const id = e.target.value;
+  currentSelection = null;
+  stopVideo();
+  // сброс списка устройств
+  ['deviceList','cameraList','intercomList'].forEach(x => { $(x).innerHTML='<li class="empty">Загрузка…</li>'; });
+  $('devCount').textContent = $('camCount').textContent = $('icomCount').textContent = '…';
+  $('detail').style.display='none';
+  $('placeholder').style.display='block';
+  $('placeholder').textContent = 'Загружаю данные дома…';
+  if (!id) { $('placeholder').textContent = 'Выберите дом.'; return; }
+  loadHouseContent(id).catch(err => {
+    $('placeholder').textContent = 'Ошибка загрузки: ' + err.message;
+  });
+});
+
+function bindList(ulId) {
+  $(ulId).addEventListener('click', e => {
+    const li = e.target.closest('li.item');
+    if (!li) return;
+    const id = li.dataset.id, scope = li.dataset.scope, name = li.dataset.name;
+    // подсветка
+    document.querySelectorAll('li.item.sel').forEach(n => n.classList.remove('sel'));
+    li.classList.add('sel');
+    currentSelection = { scope, id, name };
+    showDetail(scope, id, name);
+  });
+}
+bindList('deviceList'); bindList('cameraList'); bindList('intercomList');
+
+// ---------------------------------------------------------------- detail
+async function showDetail(scope, id, name) {
+  stopVideo();
+  $('placeholder').style.display='none';
+  const det = $('detail'); det.style.display='block';
+  $('detailTitle').textContent = name;
+  $('detailSub').textContent = {'device':'Устройство','camera':'Камера','intercom':'Домофон'}[scope];
+
+  const tbl = $('detailTable');
+  tbl.innerHTML = '';
+  const row = (k,v) => { const tr=el('tr'); tr.appendChild(el('td',null,k)); tr.appendChild(el('td',null,v===null||v===undefined?'—':v)); tbl.appendChild(tr); };
+
+  const vmsg = $('vidMsg');
+  const vidEl = $('video'), canvas = $('snapCanvas'), img = $('snapImg');
+  vmsg.style.display='block'; vmsg.textContent='Загрузка…';
+  vidEl.style.display='none'; canvas.style.display='none'; img.style.display='none';
+  $('ctrlRow').style.display='none';
+
+  let payload = null;
+  try {
+    if (scope === 'device') {
+      // у устройств нет медиа — показываем весь блок данных устройства
+      vmsg.style.display='block'; vmsg.textContent='Для этого устройства нет медиа.';
+      const d = devicesById[id] || {};
+      row('Название', d.name || id);
+      row('Тип', d.type || 'device');
+      row('Комната', d.room || '—');
+      row('Статус', d.status || '—');
+      if (d.current_value != null && d.current_value !== '') {
+        row('Значение', d.current_value);
+      }
+      if (d.units) row('Ед. изм.', d.units);
+      if (d.battery != null) row('Батарея', d.battery);
+      if (d.error_code) row('Код ошибки', d.error_code);
+      row('Last activity', d.last_activity ? iso(d.last_activity) : '—');
+      row('Updated at', d.updated_at ? iso(d.updated_at) : '—');
+      row('ID', d.id || id);
+      row('Natural ID', d.natural_id || '—');
+      return;
+    } else {
+      row('ID', id);
+      row('Тип', scope);
+      payload = await api('/api/watch', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({kind: scope, id, name})});
+    }
+  } catch (e) {
+    vmsg.style.display='block'; vmsg.textContent='Ошибка: ' + e.message;
+    return;
+  }
+
+  // заполняем KV из payload (без служебных ключей)
+  for (const [k,v] of Object.entries(payload)) {
+    if (['stream','key','note'].includes(k)) continue;
+    if (k === 'snapshot' && v) {
+      img.style.display='block'; img.src = v; img.onload = () => { img.style.display='block'; };
+      row('Снимок', 'доступен');
+      continue;
+    }
+    if (v === null || v === undefined) continue;
+    row(k, v);
+  }
+  if (payload.note) { row('', ''); row('Примечание', payload.note); }
+
+  if (payload.stream === 'webrtc') {
+    // WebRTC pass-through (как в web_view.py): видео приходит по WebSocket/WebRTC
+    vmsg.style.display='none';
+    vidEl.style.display='block';
+    $('ctrlRow').style.display='flex';
+    playWebRTC(payload.key);
+  } else if (!img.style.display || img.style.display==='none') {
+    vmsg.style.display='block'; vmsg.textContent='Видео недоступно для этого объекта.';
+  }
+}
+
+// ---- WebRTC pass-through (по образцу web_view.py) ----
+let pc = null;
+let wsVideo = null;
+
+function playWebRTC(key) {
+  const vid = $('video');
+  vid.muted = DEFAULT_MUTED;
+  $('btnMute').textContent = DEFAULT_MUTED ? '🔇 Включить звук' : '🔊 Выключить звук';
+
+  stopVideoStream();
+  activeStream = key;
+
+  const vmsg = $('vidMsg');
+  try {
+    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    pc.ontrack = (ev) => {
+      if (ev.track.kind === 'video' && ev.streams?.[0]) {
+        vid.srcObject = ev.streams[0];
+        vid.play().catch(()=>{});
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc && ['failed','disconnected','closed'].includes(pc.connectionState)) {
+        vmsg.style.display='block';
+        vmsg.textContent='Соединение: ' + pc.connectionState;
+      }
+    };
+
+    wsVideo = new WebSocket(`ws://${location.host}/ws?key=${encodeURIComponent(key)}`);
+    wsVideo.onopen = async () => {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      wsVideo.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+    };
+    wsVideo.onmessage = async (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'error') {
+        vmsg.style.display='block'; vmsg.textContent='Ошибка: ' + msg.message;
+        return;
+      }
+      if (msg.type === 'answer') {
+        await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      } else if (msg.type === 'ice') {
+        await pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid, sdpMLineIndex: msg.sdpMLineIndex });
+      }
+    };
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate && wsVideo && wsVideo.readyState === 1) {
+        wsVideo.send(JSON.stringify({ type: 'ice', candidate: ev.candidate.candidate, sdpMid: ev.candidate.sdpMid, sdpMLineIndex: ev.candidate.sdpMLineIndex }));
+      }
+    };
+  } catch (e) {
+    vmsg.style.display='block'; vmsg.textContent='Ошибка WebRTC: ' + e.message;
+  }
+}
+
+function stopVideoStream() {
+  if (wsVideo) {
+    try { wsVideo.close(); } catch(_){}
+    wsVideo = null;
+  }
+  if (pc) {
+    try { pc.close(); } catch(_){}
+    pc = null;
+  }
+  const vid = $('video');
+  if (vid.srcObject) { vid.srcObject.getTracks().forEach(t => t.stop()); vid.srcObject = null; }
+  vid.pause();
+  vid.removeAttribute('src');
+}
+
+async function stopVideo() {
+  stopVideoStream();
+  if (activeStream) {
+    try { await api('/api/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({key: activeStream})}); }
+    catch(_){}
+    activeStream = null;
+  }
+}
+
+// mute button
+$('btnMute').addEventListener('click', () => {
+  const vid = $('video');
+  vid.muted = !vid.muted;
+  $('btnMute').textContent = vid.muted ? '🔇 Включить звук' : '🔊 Выключить звук';
+});
+// fullscreen
+$('btnFull').addEventListener('click', () => {
+  const vid = $('video');
+  if (vid.requestFullscreen) vid.requestFullscreen();
+  else if (vid.webkitEnterFullscreen) vid.webkitEnterFullscreen();
+});
+
+// ---------------------------------------------------------------- init
+loadHouses().catch(e => { $('authStatus').textContent='Ошибка: '+e.message; });
+</script>
+</body>
+</html>

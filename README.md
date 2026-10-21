@@ -1,32 +1,116 @@
 # Rubetek API Library
 
-[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org)
+[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![HACS](https://img.shields.io/badge/HACS-custom-orange.svg)](https://hacs.xyz)
 
-> Python-библиотека для работы с экосистемой умного дома Rubetek с расширенным функционалом
+> Асинхронная Python-библиотека для работы с облачной платформой умного дома **Rubetek**.
 
 ## 📋 Описание
 
-Библиотека предоставляет удобный интерфейс для подключения к облачной платформе Rubetek, получения данных об устройствах, камерах и мониторинга показаний счётчиков водоснабжения. Основана на [RubetekSocketApi](https://github.com/regenara/rubetek_socket_api)
+Библиотека предоставляет удобный асинхронный интерфейс для подключения к облачной платформе
+Rubetek: управление сессией, получение данных об устройствах, камерах и домофонах,
+а также мониторинг состояния всей экосистемы. Основана на
+[RubetekSocketApi](https://github.com/regenara/rubetek_socket_api).
+
+> **Внимание:** проект является сторонней, неофициальной библиотекой и **не имеет отношения
+> к компании Rubetek** — это независимая реализация под клиентский API.
 
 ## ✨ Возможности
 
 - 🔐 Авторизация и управление сессией подключения к Rubetek Cloud
-- 📡 Получение списка устройств и их текущего состояния
-- 🎥 Работа с камерами: статус, поток, события
-- 💧 Мониторинг показаний счётчиков ХВС и ГВС с историей данных
+- 🏠 Получение списка домов (homes) и устройств с текущим состоянием
+- 🎥 Работа с камерами: статус, live-снимок, RTSP-поток
+- 🏢 Домофоны (intercoms): статус и поддержка WebRTC
+- 📺 Просмотр видеопотока домофона через **WebRTC** (`WebRTCViewer`)
+- 📼 **HLS/TS**-мост для отдачи потока домофона по HTTP (`HlsStream`)
 - 🔔 Подписка на события в реальном времени (WebSocket)
-- 🔄 Автоматическое переподключение при обрыве связи
-- 🪵 Логирование с настраиваемым уровнем детализации
+- 🔄 Автоматическое переподключение и обновление токенов при обрыве связи
+- 🪵 Логирование с маскированием чувствительных данных и настраиваемым уровнем детализации
 
 ## 🚀 Установка
 
+### Базовый пакет
+
 ```bash
-# Установка из PyPI (когда будет опубликовано)
-pip install ...
+pip install saarubetek-api
+```
 
-# Или установка из исходников
+> Установка из исходников:
+
+```bash
 pip install git+https://github.com/RuFiHome/RubetekAPI.git
+```
 
-НЕ ИМЕЕТ ОТНОШЕНИЯ К RUBETEK!!!
+### Дополнительные зависимости (по функционалу)
+
+WebRTC-видео требует `aiortc` и `websockets`, HLS-мост — `av` (PyAV):
+
+```bash
+# Только WebRTC
+pip install "saarubetek-api[webrtc]"
+
+# Только HLS
+pip install "saarubetek-api[hls]"
+
+# Всё сразу
+pip install "saarubetek-api[webrtc,hls]"
+```
+
+## 🧑‍💻 Быстрый старт
+
+```python
+import asyncio
+from SAARubetekAPI import SAARubetekAPI
+from SAARubetekAPI.exceptions import AuthorizationRequiredRubetekAPIError
+
+async def main():
+    api = SAARubetekAPI()
+    try:
+        try:
+            await api.refresh_tokens()
+        except AuthorizationRequiredRubetekAPIError as error:
+            print(error)
+            phone = input("Введите номер телефона (c +7): ")
+            await api.authentication(phone=phone)
+            code = input("Введите последние 4 цифры номера звонившего телефона: ")
+            await api.authorization(phone=phone, code=code)
+
+        user = await api.get_user()
+        print("User:", user)
+
+        houses = await api.get_homes()
+        api.house_id = houses[0].id if houses else None
+        print("Homes:", houses)
+
+        devices = await api.get_devices()
+        print("Devices:", devices)
+
+        cameras = await api.get_cameras()
+        print("Cameras:", cameras)
+
+        intercoms = await api.get_intercoms()
+        print("Intercoms:", intercoms)
+    finally:
+        await api.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Полный пример с просмотром WebRTC-потока домофона — в [`Examples/run.py`](Examples/run.py).
+
+## 📁 Структура проекта
+
+- `SAARubetekAPI/` — исходный код библиотеки
+  - `wrapper.py` — основной клиент `SAARubetekAPI`
+  - `models.py` — Pydantic-модели (User, House, Device, Camera, Intercom)
+  - `webrtc.py` — просмотр WebRTC-видео домофона (`WebRTCViewer`)
+  - `hls_bridge.py` — HLS/TS-мост (`HlsStream`)
+  - `exceptions.py` — иерархия ошибок библиотеки
+  - `logger.py` — логирование с маскированием токенов/телефонов
+- `Examples/run.py` — пример использования
+
+## ⚖️ Лицензия
+
+[MIT](LICENSE)
