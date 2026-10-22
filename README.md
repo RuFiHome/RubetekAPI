@@ -20,13 +20,20 @@ Rubetek: управление сессией, получение данных о
 
 - 🔐 Авторизация и управление сессией подключения к Rubetek Cloud
 - 🏠 Получение списка домов (homes) и устройств с текущим состоянием
-- 🎥 Работа с камерами: статус, live-снимок, RTSP-поток
+- 🎥 Работа с камерами: статус, live-снимок, доступ к RTSP-потоку
 - 🏢 Домофоны (intercoms): статус и поддержка WebRTC
 - 📺 Просмотр видеопотока домофона через **WebRTC** (`WebRTCViewer`)
-- 📼 **HLS/TS**-мост для отдачи потока домофона по HTTP (`HlsStream`)
 - 🔔 Подписка на события в реальном времени (WebSocket)
 - 🔄 Автоматическое переподключение и обновление токенов при обрыве связи
 - 🪵 Логирование с маскированием чувствительных данных и настраиваемым уровнем детализации
+
+## 🖼️ Интерфейс
+
+Интерфейс HACS-подобной панели (`Examples/test_portal.py`):
+
+| Устройства | Камеры | Домофоны |
+|:---:|:---:|:---:|
+| ![Устройства](Resources/Devices.png) | ![Камеры](Resources/Cameras.png) | ![Домофоны](Resources/Intercoms.png) |
 
 ## 🚀 Установка
 
@@ -44,17 +51,10 @@ pip install git+https://github.com/RuFiHome/RubetekAPI.git
 
 ### Дополнительные зависимости (по функционалу)
 
-WebRTC-видео требует `aiortc` и `websockets`, HLS-мост — `av` (PyAV):
+WebRTC-видео требует `aiortc` и `websockets`:
 
 ```bash
-# Только WebRTC
 pip install "saarubetek-api[webrtc]"
-
-# Только HLS
-pip install "saarubetek-api[hls]"
-
-# Всё сразу
-pip install "saarubetek-api[webrtc,hls]"
 ```
 
 ## 🧑‍💻 Быстрый старт
@@ -106,10 +106,9 @@ if __name__ == "__main__":
   - `wrapper.py` — основной клиент `SAARubetekAPI`
   - `models.py` — Pydantic-модели (User, House, Device, Camera, Intercom)
   - `webrtc.py` — просмотр WebRTC-видео домофона (`WebRTCViewer`)
-  - `hls_bridge.py` — HLS/TS-мост (`HlsStream`)
   - `exceptions.py` — иерархия ошибок библиотеки
   - `logger.py` — логирование с маскированием токенов/телефонов
-- `Examples/run.py` — пример использования
+- `Examples/` — примеры использования
 
 ## ⚖️ Лицензия
 

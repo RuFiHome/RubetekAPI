@@ -19,10 +19,15 @@ Required extra dependencies (installed on demand):
 
 import asyncio
 import json
+import logging
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 WS_URL = "wss://webrtc-splitter.iot.rubetek.com/ws"
 CHANNEL_ID = 0
+CAMERA_WS_URL = "wss://webrtc-proxy.iot.rubetek.com/wsproxy"
+CAMERA_CHANNEL_ID = 2
 PING_INTERVAL = 8      # seconds between webrtc_ping messages
 OFFER_TIMEOUT = 20     # seconds to wait for the server's SDP offer
 
@@ -44,7 +49,7 @@ class Rpc:
         return self._msg("auth", {"token": token})
 
     def open(self, channel_id: int) -> str:
-        return self._msg("webrtc_open", {"mode": 1, "channel_id": channel_id})
+        return self._msg("webrtc_open", {"mode": 1, "channelId": channel_id})
 
     def sdp_answer(self, sdp: str) -> str:
         return self._msg("webrtc_sdp", {"type": "answer", "sdp": sdp})
@@ -78,37 +83,53 @@ def parse_ice(params: Dict[str, Any]):
 
 
 class WebRTCViewer:
-    """Establishes and holds open a WebRTC media session with a Rubetek intercom.
+    """Establishes and holds open a WebRTC media session with a Rubetek device.
+
+    Supports both intercoms (``type_device="relays"``) and cameras
+    (``type_device="cameras"``). For cameras the WebRTC token is fetched from a
+    different endpoint (see :meth:`SAARubetekAPI.get_webrtc_token`).
 
     The viewer owns its own :class:`RTCPeerConnection` and a WebSocket signaling
     channel. Once :meth:`open` completes the handshake, the connection is kept
     alive with periodic ``webrtc_ping`` messages until :meth:`close` is called.
 
-    Media tracks received from the intercom are exposed via the ``on_track``
+    Media tracks received from the device are exposed via the ``on_track``
     callback (which may be set before calling :meth:`open`).
     """
 
     def __init__(self, api, relay_id: int, webrtc_token: str = None,
-                 ws_url: str = WS_URL, channel_id: int = CHANNEL_ID,
+                 ws_url: str = None, channel_id: int = None,
                  ping_interval: int = PING_INTERVAL,
-                 offer_timeout: int = OFFER_TIMEOUT):
+                 offer_timeout: int = OFFER_TIMEOUT,
+                 type_device: str = "relays"):
         """Initialize the viewer.
 
         Args:
             api: The :class:`SAARubetekAPI` instance (used to fetch config).
-            relay_id: Numeric id of the intercom (relay) device.
+            relay_id: Numeric id of the device. For intercoms this is the relay
+                id; for cameras (``type_device="cameras"``) this is the device
+                id and the API ``house_id`` must be set beforehand.
             webrtc_token: Optional pre-fetched WebRTC token. If omitted, it is
-                requested automatically from the API.
-            ws_url: WebSocket signaling endpoint.
-            channel_id: Intercom channel to open.
+                requested automatically via :meth:`SAARubetekAPI.get_webrtc_token`.
+            ws_url: WebSocket signaling endpoint. Defaults to the camera proxy
+                (``CAMERA_WS_URL``) for cameras and the intercom splitter
+                (``WS_URL``) otherwise.
+            channel_id: Device channel to open. Defaults to ``CAMERA_CHANNEL_ID``
+                for cameras and ``CHANNEL_ID`` otherwise.
             ping_interval: Seconds between keep-alive ``webrtc_ping`` messages.
             offer_timeout: Seconds to wait for the server's SDP offer.
+            type_device: Device type used to pick the token endpoint. ``"relays"``
+                (default) for intercoms, any other value (e.g. ``"cameras"``)
+                selects the cameras endpoint.
         """
         self.api = api
         self.relay_id = relay_id
         self.webrtc_token = webrtc_token
-        self.ws_url = ws_url
-        self.channel_id = channel_id
+        self.type_device = type_device
+        camera = type_device != "relays"
+        self.ws_url = ws_url or (CAMERA_WS_URL if camera else WS_URL)
+        self.channel_id = channel_id if channel_id is not None else \
+            (CAMERA_CHANNEL_ID if camera else CHANNEL_ID)
         self.ping_interval = ping_interval
         self.offer_timeout = offer_timeout
 
@@ -128,7 +149,7 @@ class WebRTCViewer:
         stays open until :meth:`close` is called.
         """
         if not self.webrtc_token:
-            self.webrtc_token = await self.api.get_webrtc_token(self.relay_id)
+            self.webrtc_token = await self.api.get_webrtc_token(self.relay_id, self.type_device)
 
         from aiortc import RTCPeerConnection
         from aiortc import RTCConfiguration, RTCIceServer
