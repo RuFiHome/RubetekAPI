@@ -25,12 +25,6 @@ webrtc = [
     "aiortc>=1.6.0",
     "websockets>=12.0"
 ]
-# HLS-мост работает поверх WebRTC, поэтому тянет и aiortc/websockets
-hls = [
-    "av>=11.0",
-    "aiortc>=1.6.0",
-    "websockets>=12.0"
-]
 
 [project.urls]
 Homepage = "https://github.com/RuFiHome/RubetekAPI"

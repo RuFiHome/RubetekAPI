@@ -61,7 +61,10 @@ class SAARubetekAPI:
                  retry_count: Optional[int] = 5,
                  retry_timeout_ms: Optional[int] = 1000,
                  logging_level: Optional[str] = "INFO",
-                 device_id: Optional[str] = None):
+                 device_id: Optional[str] = None,
+                 device_id_file: Optional[Path] = None,
+                 device_model: str = "Home Assistant",
+                 device_os: str = "Android 16"):
 
         if logging_level.upper() == "INFO":
             self.__logger.setLevel(logging.INFO)
@@ -83,7 +86,17 @@ class SAARubetekAPI:
         self.timeout: Optional[int] = timeout
         self.retry_count: Optional[int] = retry_count
         self.retry_timeout_ms: Optional[int] = retry_timeout_ms
-        self.device_id: Optional[str] = device_id or self.generate_device_uid()
+        # device_id по умолчанию кладём туда же, где лежит rr_token (refresh_token_file).
+        if device_id_file is None or device_id_file == Path("./device_id"):
+            rtf = self.refresh_token_file
+            device_id_file = (Path(rtf).parent / "device_id") if rtf else Path("./device_id")
+        self.device_id_file: Optional[Path] = device_id_file or self._default_device_id_file()
+        self.device_model = device_model
+        self.device_os = device_os
+        self.device_id: Optional[str] = device_id or self._load_device_id()
+        if not self.device_id:
+            self.device_id = self.generate_device_uid()
+            self._save_device_id(self.device_id)
 
         self.session = None
 
@@ -214,6 +227,31 @@ class SAARubetekAPI:
         device_id = ''.join(secrets.choice(charset) for _ in range(16))
         return device_id
 
+    def _load_device_id(self) -> Optional[str]:
+        """Read a previously persisted device id from ``device_id_file``.
+
+        Returns the stored id (trimmed) or ``None`` when the file is absent,
+        empty, or reading fails.
+        """
+        if not self.device_id_file:
+            return None
+        try:
+            with open(self.device_id_file, encoding='utf-8') as f:
+                value = f.read().strip()
+            return value or None
+        except OSError:
+            return None
+
+    def _save_device_id(self, device_id: str) -> None:
+        """Persist the given device id to ``device_id_file``."""
+        if not self.device_id_file:
+            return
+        try:
+            with open(self.device_id_file, 'w', encoding='utf-8') as f:
+                f.write(device_id)
+        except OSError:
+            self.__logger.warning('Could not save device id to %s', self.device_id_file)
+
     def default_headers(self, new_headers: dict | None = None) -> dict:
         """Build the default set of HTTP headers used for API requests.
 
@@ -228,11 +266,14 @@ class SAARubetekAPI:
         """
         headers = {
             "Content-Type": "application/json; charset=UTF-8",
+            "Cache-Control": "no-cache",
             "Device-Client-UID": self.device_id,
             "Device-Client-App": "Rubetek",
             "Accept-Language": "ru",
-            "Device-Client-OS": "Android",
-            "User-Agent": "okhttp/5.3.2"
+            "Device-Client-OS": self.device_os,
+            # Формат заголовка повторяет реальный клиент (Ruband/... (модель; ОС; id: uid)),
+            # чтобы ccc.rubetek.com распознал устройство как Home Assistant на Linux.
+            "User-Agent": f"Ruband/home-assistant ({self.device_model}; {self.device_os}; id: {self.device_id})"
         }
         if new_headers is not None:
             headers.update(new_headers)
@@ -296,6 +337,10 @@ class SAARubetekAPI:
         """
         if not ((email is not None) ^ (phone is not None)):
             raise ValueError('Either "email" or "phone" must be provided.')
+
+        # Новая авторизация = новое устройство: генерируем свежий device id и сохраняем.
+        self.device_id = self.generate_device_uid()
+        self._save_device_id(self.device_id)
 
         url = urljoin(self.__iot_url, 'oauth/token')
         params = {
@@ -535,20 +580,59 @@ class SAARubetekAPI:
             "Authorization": f"Bearer {self.iot_access_token}"
         }
         response = await self.send_request(method='GET', url=url, headers=headers, name="GET_INTERCOMS")
-        return [Intercom(**c) for c in response]
+        return [Intercom(**c) for c in response]     
 
-    async def get_webrtc_token(self, relay_id: int) -> str:
-        """Obtain a WebRTC signaling token for a given intercom (relay).
+    async def door_open(self, relay_id: int):
+        """Open the door via the intercom (relay) device.
 
-        The token is required to start a WebRTC session with the device.
+        Sends an unlock command (empty body) to the relay. Requires the IoT
+        access token to be obtained beforehand (via ``refresh_tokens()`` or
+        authorization).
 
         Args:
-            relay_id: Numeric id of the intercom (relay) device.
+            relay_id: Numeric id of the intercom (relay) to unlock.
+
+        Returns:
+            The JSON response of the unlock request.
+        """
+        url = urljoin(self.__iot_url, f'api/personal/v1/relays/{relay_id}/unlock')
+        headers = {
+            "Authorization": f"Bearer {self.iot_access_token}"
+        }
+        response = await self.send_request(url=url, method='POST', headers=headers,
+                                           json_data={}, name="DOOR_OPEN")
+        return response
+
+    async def get_webrtc_token(self, relay_id: int, type_device: str = "relays") -> str:
+        """Obtain a WebRTC signaling token for a device (intercom or camera).
+
+        The token is required to start a WebRTC session with the device. The
+        endpoint differs by device type: intercoms (``type_device="relays"``)
+        use ``api/personal/v1/relays/{id}/webrtc_token``, while cameras (any
+        other ``type_device``) use
+        ``api/personal/v1/homes/{house_id}/devices/{id}/webrtc_token``.
+
+        Args:
+            relay_id: Numeric id of the device. For intercoms this is the relay
+                id; for cameras it is the device id.
+            type_device: Device type used to pick the token endpoint.
+                ``"relays"`` (default) selects the intercoms endpoint; any
+                other value selects the cameras endpoint (which additionally
+                requires ``house_id`` to be set).
 
         Returns:
             The WebRTC token string.
+
+        Raises:
+            ValueError: For the cameras endpoint when ``house_id`` is not set.
+            UnknownRubetekAPIError: If the response contains no token.
         """
-        url = urljoin(self.__iot_url, f'api/personal/v1/relays/{relay_id}/webrtc_token')
+        if type_device == "relays":
+            url = urljoin(self.__iot_url, f'api/personal/v1/relays/{relay_id}/webrtc_token')
+        else:
+            if self.house_id is None:
+                raise ValueError("House ID not set")
+            url = urljoin(self.__iot_url, f'api/personal/v1/homes/{self.house_id}/devices/{relay_id}/webrtc_token')
         headers = {
             "Authorization": f"Bearer {self.iot_access_token}"
         }
@@ -560,29 +644,35 @@ class SAARubetekAPI:
 
     async def create_web_rtc_viewer(self, relay_id: int,
                                     webrtc_token: str = None,
-                                    on_track=None):
-        """Create a WebRTC video viewer for an intercom (without starting it).
+                                    on_track=None,
+                                    type_device: str = "relays"):
+        """Create a WebRTC video viewer for a device (without starting it).
 
         The returned :class:`WebRTCViewer` must be started explicitly via
         ``await viewer.open()``. Requires the extra dependency ``aiortc``
         (and ``websockets``) to be installed.
 
         Args:
-            relay_id: Numeric id of the intercom (relay) device.
+            relay_id: Numeric id of the device. For intercoms this is the relay
+                id; for cameras (``type_device="cameras"``) it is the device id
+                and the API ``house_id`` must be set beforehand.
             webrtc_token: Optional pre-fetched WebRTC token.
             on_track: Optional callback invoked when a media track is received.
+            type_device: Device type used to pick the token endpoint (see
+                :meth:`get_webrtc_token`). Default ``"relays"`` for intercoms.
 
         Returns:
             A configured :class:`WebRTCViewer` instance.
         """
         from .webrtc import WebRTCViewer
-        viewer = WebRTCViewer(api=self, relay_id=relay_id, webrtc_token=webrtc_token)
+        viewer = WebRTCViewer(api=self, relay_id=relay_id, webrtc_token=webrtc_token,
+                              type_device=type_device)
         if on_track is not None:
             viewer.on_track = on_track
         return viewer
 
-    async def watch_video(self, relay_id: int, on_track=None):
-        """Open a WebRTC video session with an intercom and keep it alive.
+    async def watch_video(self, relay_id: int, on_track=None, type_device: str = "relays"):
+        """Open a WebRTC video session with a device and keep it alive.
 
         Convenience wrapper that creates a :class:`WebRTCViewer` and immediately
         opens the connection. The returned coroutine keeps the session open until
@@ -590,13 +680,17 @@ class SAARubetekAPI:
         control over the lifecycle.
 
         Args:
-            relay_id: Numeric id of the intercom (relay) device.
+            relay_id: Numeric id of the device (relay id for intercoms, device id
+                for cameras).
             on_track: Optional callback invoked when a media track is received.
+            type_device: Device type used to pick the token endpoint (see
+                :meth:`get_webrtc_token`). Default ``"relays"`` for intercoms.
 
         Returns:
             A task that holds open the :class:`WebRTCViewer` session.
         """
-        viewer = await self.create_web_rtc_viewer(relay_id, on_track=on_track)
+        viewer = await self.create_web_rtc_viewer(relay_id, on_track=on_track,
+                                                  type_device=type_device)
         return viewer
 
     async def close(self):

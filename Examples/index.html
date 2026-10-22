@@ -139,12 +139,12 @@
         <div class="video-wrap">
           <div id="vidMsg" class="vid-msg">Видео недоступно.</div>
           <video id="video" autoplay muted playsinline controls style="display:none"></video>
-          <canvas id="snapCanvas" style="display:none;width:100%;border-radius:10px;background:#000"></canvas>
           <img id="snapImg" style="display:none;width:100%;border-radius:10px;background:#000" alt="snapshot"/>
         </div>
 
         <div class="btnrow" id="ctrlRow" style="display:none">
           <button class="btn-ghost" id="btnMute">🔇 Отключить звук</button>
+          <button class="btn-primary" id="btnDoor" style="display:none">🔓 Открыть дверь</button>
           <button class="btn-ghost" id="btnFull">⛶ На весь экран</button>
         </div>
       </div>
@@ -331,10 +331,19 @@ async function showDetail(scope, id, name) {
   const row = (k,v) => { const tr=el('tr'); tr.appendChild(el('td',null,k)); tr.appendChild(el('td',null,v===null||v===undefined?'—':v)); tbl.appendChild(tr); };
 
   const vmsg = $('vidMsg');
-  const vidEl = $('video'), canvas = $('snapCanvas'), img = $('snapImg');
+  const vidEl = $('video'), img = $('snapImg');
   vmsg.style.display='block'; vmsg.textContent='Загрузка…';
-  vidEl.style.display='none'; canvas.style.display='none'; img.style.display='none';
+  vidEl.style.display='none'; img.style.display='none';
   $('ctrlRow').style.display='none';
+  $('btnDoor').style.display='none';
+
+  // показывает снимок камеры (live_snapshot_url), если он есть
+  const showSnap = (url) => {
+    if (!url) return;
+    img.onload = () => { img.style.display='block'; };
+    img.onerror = () => { img.style.display='none'; };
+    img.src = url;
+  };
 
   let payload = null;
   try {
@@ -357,12 +366,32 @@ async function showDetail(scope, id, name) {
       row('ID', d.id || id);
       row('Natural ID', d.natural_id || '—');
       return;
-    } else {
-      row('ID', id);
-      row('Тип', scope);
-      payload = await api('/api/watch', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({kind: scope, id, name})});
     }
+
+    row('ID', id);
+    row('Тип', scope);
+
+    if (scope === 'camera') {
+      const cam = camerasById[id] || {};
+      const rtsp = cam.rtsp_url;
+      const snap = cam.live_snapshot_url;
+      if (rtsp) {
+        // RTSP-камера: не транслируем видео в браузер, показываем ссылку и снимок.
+        row('Статус', cam.status || '—');
+        row('RTSP-поток', rtsp);
+        row('Снимок', snap ? 'доступен' : '—');
+        vmsg.style.display='block';
+        vmsg.textContent='Видеопоток этой камеры доступен по RTSP, но в браузер не транслируется.';
+        showSnap(snap);
+        return;
+      }
+      // WebRTC-камера: перед включением видео показываем снимок.
+      row('Статус', cam.status || '—');
+      showSnap(snap);
+    }
+
+    payload = await api('/api/watch', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({kind: scope, id, name})});
   } catch (e) {
     vmsg.style.display='block'; vmsg.textContent='Ошибка: ' + e.message;
     return;
@@ -371,11 +400,6 @@ async function showDetail(scope, id, name) {
   // заполняем KV из payload (без служебных ключей)
   for (const [k,v] of Object.entries(payload)) {
     if (['stream','key','note'].includes(k)) continue;
-    if (k === 'snapshot' && v) {
-      img.style.display='block'; img.src = v; img.onload = () => { img.style.display='block'; };
-      row('Снимок', 'доступен');
-      continue;
-    }
     if (v === null || v === undefined) continue;
     row(k, v);
   }
@@ -386,6 +410,7 @@ async function showDetail(scope, id, name) {
     vmsg.style.display='none';
     vidEl.style.display='block';
     $('ctrlRow').style.display='flex';
+    $('btnDoor').style.display = (scope === 'intercom') ? 'inline-block' : 'none';
     playWebRTC(payload.key);
   } else if (!img.style.display || img.style.display==='none') {
     vmsg.style.display='block'; vmsg.textContent='Видео недоступно для этого объекта.';
@@ -414,6 +439,8 @@ function playWebRTC(key) {
       if (ev.track.kind === 'video' && ev.streams?.[0]) {
         vid.srcObject = ev.streams[0];
         vid.play().catch(()=>{});
+        // видео пошло — убираем снимок
+        $('snapImg').style.display='none';
       }
     };
     pc.onconnectionstatechange = () => {
@@ -486,6 +513,27 @@ $('btnFull').addEventListener('click', () => {
   const vid = $('video');
   if (vid.requestFullscreen) vid.requestFullscreen();
   else if (vid.webkitEnterFullscreen) vid.webkitEnterFullscreen();
+});
+// open door (вызывает door_open в библиотеке)
+$('btnDoor').addEventListener('click', async () => {
+  const sel = currentSelection;
+  const btn = $('btnDoor');
+  if (!sel || (sel.scope !== 'intercom' && sel.scope !== 'camera')) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.innerHTML = 'Открываю…<span class="spinner"></span>';
+  try {
+    await api('/api/door_open', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: sel.id})});
+    btn.textContent = '✅ Открыто';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (e) {
+    btn.textContent = '❌ ' + e.message;
+    setTimeout(() => { btn.textContent = original; }, 2500);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+  }
 });
 
 // ---------------------------------------------------------------- init
