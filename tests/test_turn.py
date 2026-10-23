@@ -131,6 +131,15 @@ class Provider(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(download.await_count, 1)
             self.assertIsNone(provider._servers)
 
+    async def test_missing_runtime_never_downloads_apk(self):
+        from SAARubetekAPI.apk_signature import ApkVerificationError
+        provider = RuStoreTurnProvider()
+        with patch('SAARubetekAPI.turn.java_executable', side_effect=ApkVerificationError('Java required')), \
+             patch.object(provider, '_download', new_callable=AsyncMock) as download:
+            with self.assertRaises(ApkVerificationError):
+                await provider()
+            download.assert_not_awaited()
+
     async def test_store_download_and_origin_rejection(self):
         requests = []
         class Response:

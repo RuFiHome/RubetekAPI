@@ -51,7 +51,7 @@ pip install git+https://github.com/RuFiHome/RubetekAPI.git
 
 ### Дополнительные зависимости (по функционалу)
 
-WebRTC-видео требует `aiortc`, `websockets` и Java runtime из `jdk4py` для проверки APK:
+WebRTC-видео требует `aiortc` и `websockets`:
 
 ```bash
 pip install "saarubetek-api[webrtc]"
@@ -122,8 +122,10 @@ finally:
 TURN настраивается автоматически по проверенному официальному APK; при первом
 просмотре потребуется скачать около 200 МБ. APK и verifier кэшируются в каталоге
 пользователя, обновления проверяются раз в сутки, пока клиент открыт.
-Extra `[webrtc]` включает Java runtime `jdk4py` для поддерживаемых платформ;
-отдельно устанавливать Java не нужно. Пример чтения кадров — [`Examples/run.py`](Examples/run.py).
+Для проверки APK используется установленная **Java 11+** из `JAVA_HOME` или
+`PATH`. JRE не входит в зависимости `[webrtc]`. Если Java нет, готовый runtime
+можно установить отдельно: `pip install "saarubetek-api[webrtc,apk-runtime]"`.
+При ручных ICE-настройках Java не нужна. Пример чтения кадров — [`Examples/run.py`](Examples/run.py).
 
 ### Собственная конфигурация видео
 

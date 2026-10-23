@@ -48,8 +48,12 @@
   подпись или отсутствие verifier не отключают проверку.
 - MIT Java bridge поставляется с исходником и воспроизводимым `.class`;
   CI пересобирает его JDK 21 с `--release 11 -g:none` и сравнивает результат.
-  В extra `[webrtc]` добавлен `jdk4py` с готовой Java runtime; отдельная системная
-  Java не нужна. Требуется платформа с поддерживаемым wheel jdk4py.
+  JRE не входит в зависимости `[webrtc]`: используется установленная Java 11+
+  из `JAVA_HOME` или `PATH`. `jdk4py` доступен только в отдельном extra
+  `[apk-runtime]` для установки без ручной настройки Java и требует платформы
+  с поддерживаемым wheel. Без runtime автоматический TURN завершается понятной
+  ошибкой до скачивания APK/verifier; подпись никогда не пропускается. Ручной ICE
+  и собственные providers не требуют Java.
 - APK помещается в отдельный staging-файл; проверяется и читается тот же файл.
   Локальный `apk_path` также проходит обязательную проверку. Альтернативный
   пакет требует явно заданных проверенных `trusted_certificates`.
@@ -76,7 +80,8 @@
 
 ### Проверки и ограничения
 
-- 39 unittest: lifecycle/cancellation/backoff, свежие токены, early ICE,
+- 44 unittest: поиск системной/опциональной Java, отказ без runtime до загрузки APK,
+  lifecycle/cancellation/backoff, свежие токены, early ICE,
   factory defaults, extraction, cache/lock/cooldown, периодические проверки,
   close race, verify-before-extract, rollback. Реальная Android verifier на
   публичных AOSP fixtures проверяет верную/повреждённую подпись, изменение

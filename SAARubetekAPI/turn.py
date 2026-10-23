@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 import zipfile
-from .apk_signature import verify_apk, default_cache_dir, ApkVerificationError
+from .apk_signature import verify_apk, default_cache_dir, java_executable, ApkVerificationError
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +190,9 @@ class RuStoreTurnProvider:
         async with self._lock:
             if self._closed:
                 raise TurnConfigurationError('TURN provider is closed')
+            if self._servers is None:
+                # Fail before the large APK download when no verifier can run.
+                java_executable()
             if self.apk_path is None and not self._cache_checked:
                 self._cache_checked = True
                 cached = self.cache_dir / (self.package_name + '.apk')

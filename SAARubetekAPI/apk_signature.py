@@ -9,6 +9,7 @@ from importlib.resources import files
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 
 APKSIG_VERSION = '8.13.0'
@@ -27,6 +28,27 @@ class ApkVerificationError(RuntimeError):
 def default_cache_dir():
     base = Path(os.environ['LOCALAPPDATA']) if os.name == 'nt' and os.environ.get('LOCALAPPDATA') else Path.home() / '.cache'
     return base / 'saarubetek-api'
+
+
+def java_executable():
+    """Reuse installed Java; a bundled runtime is an explicit optional extra."""
+    home = os.environ.get('JAVA_HOME')
+    if home:
+        candidate = Path(home) / 'bin' / ('java.exe' if os.name == 'nt' else 'java')
+        if candidate.is_file():
+            return str(candidate.resolve())
+    installed = shutil.which('java')
+    if installed:
+        return installed
+    try:
+        from jdk4py import JAVA
+        if Path(JAVA).is_file():
+            return str(JAVA)
+    except ImportError:
+        pass
+    raise ApkVerificationError(
+        'Automatic TURN verification requires Java 11+ in JAVA_HOME/PATH '
+        'or the optional saarubetek-api[apk-runtime] extra')
 
 
 async def verifier_jar(cache_dir):
@@ -74,10 +96,7 @@ async def verify_apk(path, *, package_name, version_code=None, trusted_certifica
     pins = frozenset(str(p).lower() for p in trusted_certificates)
     if not pins or any(not re.fullmatch('[0-9a-f]{64}', p) for p in pins):
         raise ApkVerificationError('Invalid publisher certificate pins')
-    try:
-        from jdk4py import JAVA
-    except ImportError:
-        raise ApkVerificationError('Install saarubetek-api[webrtc] to obtain the APK verifier runtime') from None
+    java = java_executable()
     jar = await verifier_jar(cache_dir or default_cache_dir())
     process = None
     try:
@@ -88,7 +107,7 @@ async def verify_apk(path, *, package_name, version_code=None, trusted_certifica
             env = {k: v for k, v in os.environ.items() if k not in
                    ('JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH')}
             process = await asyncio.create_subprocess_exec(
-                str(JAVA), '-Xmx256m', '-cp', os.pathsep.join((str(jar.resolve()), directory)),
+                java, '-Xmx256m', '-cp', os.pathsep.join((str(jar.resolve()), directory)),
                 'ApkVerifierBridge', str(Path(path).resolve()), env=env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             output, _ = await asyncio.wait_for(process.communicate(), 90)
