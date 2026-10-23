@@ -1,4 +1,4 @@
-"""Extract TURN configuration from the official APK, verifying signatures by default.
+"""Extract TURN configuration from the official APK, with opt-in signature verification.
 
 The reviewed Android client uses static SDK constants, not an observed TURN
 credential issuance endpoint. No vendor password is embedded in this module.
@@ -155,19 +155,20 @@ class RuStoreTurnProvider:
     """Async ICE provider downloading the public com.fsk.home app from RuStore.
 
     Credentials are static SDK constants, not short-lived account credentials.
-    A signed APK is cached on disk and reverified before reuse. A background task
+    An APK is cached on disk. With verify_signature=True it is reverified before reuse.
+    A background task
     checks the version every refresh_seconds (24h default), downloading only changes.
-    The first download is about 200 MB. Local apk_path also requires verification;
+    The first download is about 200 MB. Opt-in verification also covers apk_path;
     the pinned verifier JAR may need a first download. close() stops periodic checks.
-    Invalid updates retain the last authenticated configuration. With no trusted
+    Invalid updates retain the previous configuration. With no available
     configuration, failures never silently downgrade to public STUN.
-    verify_signature=False explicitly trusts HTTPS distribution without publisher
+    verify_signature=False (default) trusts HTTPS distribution without publisher
     authentication and needs no Java. Its disk cache is isolated in unverified/.
     """
 
     def __init__(self, *, apk_path=None, package_name='com.fsk.home', refresh_seconds=86400,
                  failure_retry_seconds=300, cache_dir=None, trusted_certificates=None,
-                 verify_signature=True):
+                 verify_signature=False):
         if not isinstance(verify_signature, bool):
             raise ValueError('verify_signature must be a boolean')
         if not verify_signature and trusted_certificates is not None:
@@ -190,7 +191,7 @@ class RuStoreTurnProvider:
         self._verify_signature = verify_signature
         if not verify_signature:
             self.cache_dir = self.cache_dir / 'unverified'
-            logger.warning('APK signature verification explicitly disabled; TURN trusts HTTPS RuStore only')
+            logger.warning('APK signature verification is disabled; TURN trusts HTTPS RuStore only')
         self.trusted_certificates = trusted_certificates
         self._cache_checked = False
         self._watch_task = None

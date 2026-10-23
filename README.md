@@ -119,24 +119,22 @@ finally:
     await api.close()
 ```
 
-TURN настраивается автоматически по проверенному официальному APK; при первом
-просмотре потребуется скачать около 200 МБ. APK и verifier кэшируются в каталоге
-пользователя, обновления проверяются раз в сутки, пока клиент открыт.
-Для проверки APK используется установленная **Java 11+** из `JAVA_HOME` или
-`PATH`. JRE не входит в зависимости `[webrtc]`. Если Java нет, готовый runtime
-можно установить отдельно: `pip install "saarubetek-api[webrtc,apk-runtime]"`.
-При ручных ICE-настройках Java не нужна. Пример чтения кадров — [`Examples/run.py`](Examples/run.py).
+TURN подхватывается автоматически после обычного входа, **Java не требуется**.
+При первом просмотре загружается около 200 МБ официального APK из RuStore;
+APK кэшируется, новая версия проверяется раз в сутки, пока клиент открыт.
+По умолчанию доверяется HTTPS RuStore: подпись издателя и подписанные
+package/version не проверяются. Код APK не исполняется.
 
-Можно явно отключить проверку подписи и получать TURN без Java:
+Проверку подписи можно включить отдельно:
 
 ```python
-api = SAARubetekAPI(verify_turn_apk=False)
-# Далее обычная авторизация и создание viewer — TURN подхватится автоматически.
+api = SAARubetekAPI(verify_turn_apk=True)
 ```
 
-В этом режиме доверяется HTTPS-загрузке RuStore, а подпись издателя и
-подписанные package/version не проверяются. По умолчанию проверка включена.
-Для отдельного provider настройка называется `RuStoreTurnProvider(verify_signature=False)`.
+Для этого нужна Java 11+ из `JAVA_HOME`/`PATH` либо отдельный runtime:
+`pip install "saarubetek-api[webrtc,apk-runtime]"`. Для самостоятельного provider:
+`RuStoreTurnProvider(verify_signature=True)`. Ошибки проверки не отключают её
+автоматически. Пример чтения кадров — [`Examples/run.py`](Examples/run.py).
 
 ### Собственная конфигурация видео
 

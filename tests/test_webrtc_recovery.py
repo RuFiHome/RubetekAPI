@@ -290,7 +290,8 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
 
     async def test_api_automatically_shares_turn_provider_and_closes_it(self):
         from SAARubetekAPI import SAARubetekAPI
-        client = object.__new__(SAARubetekAPI)
+        client = SAARubetekAPI(refresh_token_file=None, save_token_file=False, device_id='test-device')
+        self.assertFalse(client._verify_turn_apk)
         client.session = None
         provider = SimpleNamespace(close=AsyncMock())
         with patch('SAARubetekAPI.turn.RuStoreTurnProvider', return_value=provider) as create:
@@ -302,19 +303,19 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
             self.assertIs(second.ice_servers_provider, provider)
             self.assertIsNone(manual.ice_servers_provider)
             self.assertIsNone(disabled.ice_servers_provider)
-            create.assert_called_once_with()
+            create.assert_called_once_with(verify_signature=False)
             await client.close()
             provider.close.assert_awaited_once()
 
-    async def test_api_signature_opt_out_configures_shared_provider(self):
+    async def test_api_signature_opt_in_configures_shared_provider(self):
         from SAARubetekAPI import SAARubetekAPI
         client = SAARubetekAPI(refresh_token_file=None, save_token_file=False,
-                               device_id='test-device', verify_turn_apk=False)
+                               device_id='test-device', verify_turn_apk=True)
         provider = SimpleNamespace(close=AsyncMock())
         with patch('SAARubetekAPI.turn.RuStoreTurnProvider', return_value=provider) as create:
             viewer = await client.create_web_rtc_viewer(1)
             self.assertIs(viewer.ice_servers_provider, provider)
-            create.assert_called_once_with(verify_signature=False)
+            create.assert_called_once_with(verify_signature=True)
             await client.close()
 
 

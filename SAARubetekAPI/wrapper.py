@@ -66,7 +66,7 @@ class SAARubetekAPI:
                  device_id_file: Optional[Path] = None,
                  device_model: str = "Home Assistant",
                  device_os: str = "Android 16",
-                 verify_turn_apk: bool = True):
+                 verify_turn_apk: bool = False):
 
         if not isinstance(verify_turn_apk, bool):
             raise ValueError('verify_turn_apk must be a boolean')
@@ -661,7 +661,8 @@ class SAARubetekAPI:
         or ``await viewer.open()`` for one session. ``ice_servers`` overrides
         the async ``ice_servers_provider``; extra viewer_options configure retry
         intervals and timeouts. Install ``saarubetek-api[webrtc]``. By default
-        the API shares a signed-APK automatic TURN provider across viewers;
+        the API shares an automatic TURN provider across viewers, without Java
+        by default (signature checks require ``verify_turn_apk=True``);
         explicit ICE/provider settings or ``auto_turn=False`` override it.
 
         Args:
@@ -712,11 +713,11 @@ class SAARubetekAPI:
         return viewer
 
     def get_turn_provider(self):
-        """Shared, pinned automatic TURN source; network starts only on video use."""
+        """Shared automatic TURN source; signature verification is opt-in."""
         if getattr(self, '_turn_provider', None) is None:
             from .turn import RuStoreTurnProvider
-            self._turn_provider = (RuStoreTurnProvider() if getattr(self, '_verify_turn_apk', True)
-                                   else RuStoreTurnProvider(verify_signature=False))
+            self._turn_provider = RuStoreTurnProvider(
+                verify_signature=getattr(self, '_verify_turn_apk', False))
         return self._turn_provider
 
     async def close(self):

@@ -17,7 +17,7 @@ class WebRTCViewer:
     token is used once, then a fresh token is requested for every new attempt.
     ice_servers overrides ice_servers_provider, including an explicit empty list.
     The async provider is called before each attempt and must return ICE dictionaries.
-    Native SAARubetekAPI clients share an automatic signed-APK TURN provider.
+    Native SAARubetekAPI clients share an automatic TURN provider; signature checks are opt-in.
     Explicit ICE settings/providers or auto_turn=False override that default.
     """
 

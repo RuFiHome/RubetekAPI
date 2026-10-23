@@ -102,7 +102,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             apk = Path(directory) / 'fixture.apk'
             apk.write_bytes(fixture_apk())
-            provider = RuStoreTurnProvider(apk_path=apk)
+            provider = RuStoreTurnProvider(apk_path=apk, verify_signature=True)
             with patch.object(provider, '_download', new_callable=AsyncMock) as download:
                 values = await provider()
                 values[0]['credential'] = 'changed-by-caller'
@@ -110,7 +110,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
                 download.assert_not_awaited()
 
     async def test_shared_cache_lock_and_refresh(self):
-        provider = RuStoreTurnProvider(refresh_seconds=1)
+        provider = RuStoreTurnProvider(refresh_seconds=1, verify_signature=True)
         async def download():
             await asyncio.sleep(.01)
             return [{'urls': 'turn:example.invalid', 'credential': 'fixture-password'}]
@@ -122,7 +122,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mocked.await_count, 2)
 
     async def test_failed_retrieval_not_cached_or_downgraded(self):
-        provider = RuStoreTurnProvider()
+        provider = RuStoreTurnProvider(verify_signature=True)
         with patch.object(provider, '_download', new=AsyncMock(side_effect=TurnConfigurationError('unavailable'))) as download:
             with self.assertRaises(TurnConfigurationError):
                 await provider()
@@ -133,18 +133,19 @@ class Provider(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_runtime_never_downloads_apk(self):
         from SAARubetekAPI.apk_signature import ApkVerificationError
-        provider = RuStoreTurnProvider()
+        provider = RuStoreTurnProvider(verify_signature=True)
         with patch('SAARubetekAPI.turn.java_executable', side_effect=ApkVerificationError('Java required')), \
              patch.object(provider, '_download', new_callable=AsyncMock) as download:
             with self.assertRaises(ApkVerificationError):
                 await provider()
             download.assert_not_awaited()
 
-    async def test_explicit_opt_out_extracts_without_java_or_verifier(self):
+    async def test_default_extracts_without_java_or_verifier(self):
         with tempfile.TemporaryDirectory() as directory:
             apk = Path(directory) / 'fixture.apk'
             apk.write_bytes(fixture_apk())
-            provider = RuStoreTurnProvider(apk_path=apk, verify_signature=False)
+            provider = RuStoreTurnProvider(apk_path=apk)
+            self.assertFalse(provider.verify_signature)
             with patch('SAARubetekAPI.turn.java_executable', side_effect=AssertionError('Java must not run')), \
                  patch('SAARubetekAPI.turn.verify_apk', side_effect=AssertionError('Verifier must not run')):
                 self.assertEqual((await provider())[0]['credential'], 'fixture-password')
@@ -164,7 +165,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await provider(), original)
                 self.assertEqual(provider._version_code, '1')
             await provider.close()
-            trusted = RuStoreTurnProvider(cache_dir=directory)
+            trusted = RuStoreTurnProvider(cache_dir=directory, verify_signature=True)
             with patch.object(trusted, '_download', side_effect=TurnConfigurationError('offline')):
                 with self.assertRaises(TurnConfigurationError):
                     await trusted()
@@ -182,7 +183,8 @@ class Provider(unittest.IsolatedAsyncioTestCase):
                 RuStoreTurnProvider(verify_signature=value)
         with self.assertRaises(ValueError):
             RuStoreTurnProvider(verify_signature=False, trusted_certificates={'0' * 64})
-        self.assertTrue(RuStoreTurnProvider().verify_signature)
+        self.assertTrue(RuStoreTurnProvider(verify_signature=True).verify_signature)
+        self.assertFalse(RuStoreTurnProvider().verify_signature)
 
     async def test_store_download_and_origin_rejection(self):
         requests = []
@@ -221,21 +223,21 @@ class Provider(unittest.IsolatedAsyncioTestCase):
             def post(self, url, **kwargs):
                 return Response({'body': {'appId': 'fixture', 'versionCode': '1', 'apkUrl': 'https://' + self.host + '/fixture.apk'}})
         with patch('aiohttp.ClientSession', Session):
-            provider = RuStoreTurnProvider()
+            provider = RuStoreTurnProvider(verify_signature=True)
             config = await provider()
             self.assertEqual(config[0]['credential'], 'fixture-password')
             provider._valid_until = 0
             await provider()
             Session.host = 'untrusted.example.invalid'
             with self.assertRaises(TurnConfigurationError):
-                await RuStoreTurnProvider(cache_dir=Path(self.directory.name) / 'untrusted')()
+                await RuStoreTurnProvider(cache_dir=Path(self.directory.name) / 'untrusted', verify_signature=True)()
             Session.host = ':fixture-password@static.rustore.ru'
             with self.assertRaises(TurnConfigurationError):
-                await RuStoreTurnProvider(cache_dir=Path(self.directory.name) / 'userinfo')()
+                await RuStoreTurnProvider(cache_dir=Path(self.directory.name) / 'userinfo', verify_signature=True)()
         self.assertEqual(len([u for u in requests if 'fixture.apk' in u]), 1)
 
     async def test_periodic_check_without_new_viewer_and_clean_shutdown(self):
-        provider = RuStoreTurnProvider(refresh_seconds=.02, failure_retry_seconds=.02)
+        provider = RuStoreTurnProvider(refresh_seconds=.02, failure_retry_seconds=.02, verify_signature=True)
         download = AsyncMock(side_effect=[[{'urls': 'turn:first.invalid'}], [{'urls': 'turn:second.invalid'}]])
         with patch.object(provider, '_download', download):
             await provider()
@@ -251,7 +253,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
 
     async def test_bad_update_keeps_last_verified_configuration(self):
         from SAARubetekAPI.apk_signature import ApkVerificationError
-        provider = RuStoreTurnProvider()
+        provider = RuStoreTurnProvider(verify_signature=True)
         with patch.object(provider, '_download', AsyncMock(return_value=[{'urls': 'turn:verified.invalid'}])):
             original = await provider()
         provider._valid_until = 0
@@ -261,7 +263,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
         await provider.close()
 
     async def test_close_during_initial_fetch_cannot_restart_watcher(self):
-        provider = RuStoreTurnProvider()
+        provider = RuStoreTurnProvider(verify_signature=True)
         entered, release = asyncio.Event(), asyncio.Event()
         async def download():
             entered.set()
@@ -280,7 +282,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
 
     async def test_signature_verification_precedes_dex_extraction(self):
         from SAARubetekAPI.apk_signature import ApkVerificationError
-        provider = RuStoreTurnProvider()
+        provider = RuStoreTurnProvider(verify_signature=True)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'untrusted.apk'
             path.write_bytes(fixture_apk())
@@ -292,7 +294,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
 
     async def test_signed_version_rollback_is_rejected(self):
         from SAARubetekAPI.apk_signature import ApkVerificationError
-        provider = RuStoreTurnProvider()
+        provider = RuStoreTurnProvider(verify_signature=True)
         provider._version_code = '2'
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'older.apk'
