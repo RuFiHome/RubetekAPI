@@ -127,6 +127,17 @@ TURN настраивается автоматически по проверен
 можно установить отдельно: `pip install "saarubetek-api[webrtc,apk-runtime]"`.
 При ручных ICE-настройках Java не нужна. Пример чтения кадров — [`Examples/run.py`](Examples/run.py).
 
+Можно явно отключить проверку подписи и получать TURN без Java:
+
+```python
+api = SAARubetekAPI(verify_turn_apk=False)
+# Далее обычная авторизация и создание viewer — TURN подхватится автоматически.
+```
+
+В этом режиме доверяется HTTPS-загрузке RuStore, а подпись издателя и
+подписанные package/version не проверяются. По умолчанию проверка включена.
+Для отдельного provider настройка называется `RuStoreTurnProvider(verify_signature=False)`.
+
 ### Собственная конфигурация видео
 
 ```python

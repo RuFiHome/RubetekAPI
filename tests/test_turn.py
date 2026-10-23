@@ -140,6 +140,50 @@ class Provider(unittest.IsolatedAsyncioTestCase):
                 await provider()
             download.assert_not_awaited()
 
+    async def test_explicit_opt_out_extracts_without_java_or_verifier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / 'fixture.apk'
+            apk.write_bytes(fixture_apk())
+            provider = RuStoreTurnProvider(apk_path=apk, verify_signature=False)
+            with patch('SAARubetekAPI.turn.java_executable', side_effect=AssertionError('Java must not run')), \
+                 patch('SAARubetekAPI.turn.verify_apk', side_effect=AssertionError('Verifier must not run')):
+                self.assertEqual((await provider())[0]['credential'], 'fixture-password')
+            await provider.close()
+
+    async def test_opt_out_cache_is_separate_persistent_and_checked_for_corruption(self):
+        directory = Path(self.directory.name)
+        provider = RuStoreTurnProvider(cache_dir=directory, verify_signature=False)
+        self.assertEqual(provider.cache_dir, directory / 'unverified')
+        with patch('SAARubetekAPI.turn.verify_apk', side_effect=AssertionError('Verifier must not run')):
+            original = await provider._read_verified(io.BytesIO(fixture_apk()), expected_version='1', save=True)
+            provider = RuStoreTurnProvider(cache_dir=directory, verify_signature=False)
+            with patch.object(provider, '_download', new_callable=AsyncMock) as download:
+                async def unchanged():
+                    return provider._servers
+                download.side_effect = unchanged
+                self.assertEqual(await provider(), original)
+                self.assertEqual(provider._version_code, '1')
+            await provider.close()
+            trusted = RuStoreTurnProvider(cache_dir=directory)
+            with patch.object(trusted, '_download', side_effect=TurnConfigurationError('offline')):
+                with self.assertRaises(TurnConfigurationError):
+                    await trusted()
+            cached = provider.cache_dir / 'com.fsk.home.apk'
+            cached.write_bytes(b'corrupt cache')
+            another = RuStoreTurnProvider(cache_dir=directory, verify_signature=False)
+            with patch.object(another, '_download', side_effect=TurnConfigurationError('offline')):
+                with self.assertRaises(TurnConfigurationError):
+                    await another()
+            self.assertIsNone(another._servers)
+
+    async def test_signature_opt_out_requires_explicit_boolean_and_no_pins(self):
+        for value in (None, 0, 'false'):
+            with self.assertRaises(ValueError):
+                RuStoreTurnProvider(verify_signature=value)
+        with self.assertRaises(ValueError):
+            RuStoreTurnProvider(verify_signature=False, trusted_certificates={'0' * 64})
+        self.assertTrue(RuStoreTurnProvider().verify_signature)
+
     async def test_store_download_and_origin_rejection(self):
         requests = []
         class Response:

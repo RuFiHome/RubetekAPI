@@ -306,6 +306,17 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
             await client.close()
             provider.close.assert_awaited_once()
 
+    async def test_api_signature_opt_out_configures_shared_provider(self):
+        from SAARubetekAPI import SAARubetekAPI
+        client = SAARubetekAPI(refresh_token_file=None, save_token_file=False,
+                               device_id='test-device', verify_turn_apk=False)
+        provider = SimpleNamespace(close=AsyncMock())
+        with patch('SAARubetekAPI.turn.RuStoreTurnProvider', return_value=provider) as create:
+            viewer = await client.create_web_rtc_viewer(1)
+            self.assertIs(viewer.ice_servers_provider, provider)
+            create.assert_called_once_with(verify_signature=False)
+            await client.close()
+
 
 if __name__ == '__main__':
     unittest.main()

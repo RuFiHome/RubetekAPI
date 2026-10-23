@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Явное отключение проверки подписи APK
+
+- Добавлены `SAARubetekAPI(verify_turn_apk=False)` и
+  `RuStoreTurnProvider(verify_signature=False)`: получение TURN и проверка
+  обновлений работают без Java и verifier JAR после явного выбора этого режима.
+- По умолчанию подпись остаётся обязательной. Ошибка verifier/отсутствие Java
+  никогда не переключают режим автоматически; принимается только boolean.
+- При отключении сохраняются TLS, allowlist CDN, запрет redirects, ограничения
+  APK/DEX и извлечение только известных literal-return методов. Подлинность
+  издателя и подписанные manifest package/version не проверяются: доверие
+  основано на HTTPS RuStore, version code берётся из метаданных магазина.
+- Кэш этого режима отделён в `unverified/`, не подменяет проверенный APK.
+  Версия и SHA256 sidecar позволяют переиспользовать кэш после перезапуска
+  и обнаруживать повреждения; этот хэш не подтверждает издателя.
+- Переданный certificate pin при отключённой проверке отклоняется, чтобы не
+  создавать впечатление действующего pinning. При отключении выводится
+  безопасное предупреждение, без credentials.
+
 ### WebRTC и TURN (PR #10, включает PR #9)
 
 - Ручная настройка `ice_servers` из PR #9 включена в PR #10: окончательная
@@ -80,7 +98,8 @@
 
 ### Проверки и ограничения
 
-- 44 unittest: поиск системной/опциональной Java, отказ без runtime до загрузки APK,
+- 48 unittest: явный opt-out без обращения к Java/verifier, раздельный кэш,
+  поиск системной/опциональной Java, отказ без runtime до загрузки APK,
   lifecycle/cancellation/backoff, свежие токены, early ICE,
   factory defaults, extraction, cache/lock/cooldown, периодические проверки,
   close race, verify-before-extract, rollback. Реальная Android verifier на

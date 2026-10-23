@@ -65,8 +65,12 @@ class SAARubetekAPI:
                  device_id: Optional[str] = None,
                  device_id_file: Optional[Path] = None,
                  device_model: str = "Home Assistant",
-                 device_os: str = "Android 16"):
+                 device_os: str = "Android 16",
+                 verify_turn_apk: bool = True):
 
+        if not isinstance(verify_turn_apk, bool):
+            raise ValueError('verify_turn_apk must be a boolean')
+        self._verify_turn_apk = verify_turn_apk
         if logging_level.upper() == "INFO":
             self.__logger.setLevel(logging.INFO)
         elif logging_level.upper() == "WARNING":
@@ -711,7 +715,8 @@ class SAARubetekAPI:
         """Shared, pinned automatic TURN source; network starts only on video use."""
         if getattr(self, '_turn_provider', None) is None:
             from .turn import RuStoreTurnProvider
-            self._turn_provider = RuStoreTurnProvider()
+            self._turn_provider = (RuStoreTurnProvider() if getattr(self, '_verify_turn_apk', True)
+                                   else RuStoreTurnProvider(verify_signature=False))
         return self._turn_provider
 
     async def close(self):

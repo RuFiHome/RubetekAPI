@@ -1,4 +1,4 @@
-"""Extract TURN configuration only from a publisher-authenticated official APK.
+"""Extract TURN configuration from the official APK, verifying signatures by default.
 
 The reviewed Android client uses static SDK constants, not an observed TURN
 credential issuance endpoint. No vendor password is embedded in this module.
@@ -12,6 +12,8 @@ import tempfile
 import time
 import logging
 import os
+import hashlib
+import json
 from pathlib import Path
 from urllib.parse import urlsplit
 import zipfile
@@ -159,10 +161,17 @@ class RuStoreTurnProvider:
     the pinned verifier JAR may need a first download. close() stops periodic checks.
     Invalid updates retain the last authenticated configuration. With no trusted
     configuration, failures never silently downgrade to public STUN.
+    verify_signature=False explicitly trusts HTTPS distribution without publisher
+    authentication and needs no Java. Its disk cache is isolated in unverified/.
     """
 
     def __init__(self, *, apk_path=None, package_name='com.fsk.home', refresh_seconds=86400,
-                 failure_retry_seconds=300, cache_dir=None, trusted_certificates=None):
+                 failure_retry_seconds=300, cache_dir=None, trusted_certificates=None,
+                 verify_signature=True):
+        if not isinstance(verify_signature, bool):
+            raise ValueError('verify_signature must be a boolean')
+        if not verify_signature and trusted_certificates is not None:
+            raise ValueError('Publisher pins require signature verification')
         if not re.fullmatch(r'[a-zA-Z][\w]*(?:\.[a-zA-Z][\w]*)+', package_name):
             raise ValueError('Invalid app package')
         if refresh_seconds <= 0 or not refresh_seconds < float('inf'):
@@ -178,11 +187,27 @@ class RuStoreTurnProvider:
         self.failure_retry_seconds = failure_retry_seconds
         self._lock = asyncio.Lock()
         self.cache_dir = Path(cache_dir) if cache_dir is not None else default_cache_dir()
+        self._verify_signature = verify_signature
+        if not verify_signature:
+            self.cache_dir = self.cache_dir / 'unverified'
+            logger.warning('APK signature verification explicitly disabled; TURN trusts HTTPS RuStore only')
         self.trusted_certificates = trusted_certificates
         self._cache_checked = False
         self._watch_task = None
         self._closed = False
         self.last_update_error = None
+
+    @property
+    def verify_signature(self):
+        return self._verify_signature
+
+    @staticmethod
+    def _file_digest(path):
+        digest = hashlib.sha256()
+        with Path(path).open('rb') as stream:
+            while chunk := stream.read(1024**2):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     async def __call__(self):
         if self._closed:
@@ -190,7 +215,7 @@ class RuStoreTurnProvider:
         async with self._lock:
             if self._closed:
                 raise TurnConfigurationError('TURN provider is closed')
-            if self._servers is None:
+            if self._servers is None and self.verify_signature:
                 # Fail before the large APK download when no verifier can run.
                 java_executable()
             if self.apk_path is None and not self._cache_checked:
@@ -198,8 +223,16 @@ class RuStoreTurnProvider:
                 cached = self.cache_dir / (self.package_name + '.apk')
                 if cached.exists():
                     try:
-                        self._servers = await self._read_verified(cached)
-                    except (TurnConfigurationError, ApkVerificationError):
+                        version = None
+                        if not self.verify_signature:
+                            if cached.stat().st_size > MAX_APK or cached.with_suffix('.json').stat().st_size > 4096:
+                                raise ValueError('Oversized unverified cache')
+                            metadata = json.loads(cached.with_suffix('.json').read_text())
+                            version = metadata['version']
+                            if not isinstance(version, int) or version < 0 or await asyncio.to_thread(self._file_digest, cached) != metadata['sha256']:
+                                raise ValueError('Invalid unverified cache metadata')
+                        self._servers = await self._read_verified(cached, expected_version=version)
+                    except (TurnConfigurationError, ApkVerificationError, OSError, ValueError, KeyError, TypeError):
                         # A corrupt or untrusted cache is never a credential source.
                         pass
             if self._servers is None or time.monotonic() >= self._valid_until:
@@ -218,7 +251,7 @@ class RuStoreTurnProvider:
                         self.last_update_error = type(error).__name__
                         if self._servers is None:
                             raise
-                        logger.warning('TURN update rejected/unavailable; keeping last verified configuration (%s)', type(error).__name__)
+                        logger.warning('TURN update rejected/unavailable; keeping previous configuration (%s)', type(error).__name__)
                     else:
                         self._servers = servers
                         self._valid_until = time.monotonic() + self.refresh_seconds
@@ -258,7 +291,7 @@ class RuStoreTurnProvider:
         except (TurnConfigurationError, ApkVerificationError):
             raise
         except Exception:
-            raise ApkVerificationError('Invalid or unsupported signed APK') from None
+            raise ApkVerificationError('Invalid or unsupported APK') from None
 
     async def _read_verified_impl(self, apk, expected_version=None, save=False):
         # Copy the selected base APK into a private immutable-for-this-operation
@@ -291,11 +324,15 @@ class RuStoreTurnProvider:
                         if Path(apk).stat().st_size > MAX_APK:
                             raise ApkVerificationError('Oversized APK')
                         shutil.copyfile(apk, target)
-            identity = await verify_apk(target, package_name=self.package_name,
-                version_code=expected_version, trusted_certificates=self.trusted_certificates,
-                cache_dir=self.cache_dir)
-            version = identity['version']
-            if self._version_code is not None and version < int(self._version_code):
+            if self.verify_signature:
+                identity = await verify_apk(target, package_name=self.package_name,
+                    version_code=expected_version, trusted_certificates=self.trusted_certificates,
+                    cache_dir=self.cache_dir)
+                version = identity['version']
+            else:
+                # Explicit opt-out: metadata is not a signed manifest identity.
+                version = int(expected_version) if expected_version is not None else None
+            if self._version_code is not None and version is not None and version < int(self._version_code):
                 raise ApkVerificationError('APK version rollback rejected')
             servers = await asyncio.to_thread(extract_turn_servers, target)
             if save:
@@ -308,7 +345,16 @@ class RuStoreTurnProvider:
                     Path(name).replace(self.cache_dir / (self.package_name + '.apk'))
                 finally:
                     Path(name).unlink(missing_ok=True)
-            self._version_code = str(version)
+                if not self.verify_signature:
+                    metadata = {'version': version, 'sha256': await asyncio.to_thread(self._file_digest, target)}
+                    fd, name = tempfile.mkstemp(prefix='.unverified-meta-', dir=self.cache_dir)
+                    try:
+                        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+                            json.dump(metadata, out)
+                        Path(name).replace(self.cache_dir / (self.package_name + '.json'))
+                    finally:
+                        Path(name).unlink(missing_ok=True)
+            self._version_code = str(version) if version is not None else None
             return servers
 
     async def _download(self):
@@ -325,6 +371,8 @@ class RuStoreTurnProvider:
                 if meta['packageName'] != self.package_name or int(meta['fileSize']) > MAX_APK:
                     raise ValueError('Unexpected package metadata')
                 version = str(meta['versionCode'])
+                if int(version) < 0:
+                    raise ValueError('Invalid APK version')
                 if self._version_code is not None and int(version) < int(self._version_code):
                     raise ApkVerificationError('APK version rollback rejected')
                 if self._servers is not None and self._version_code == version:
