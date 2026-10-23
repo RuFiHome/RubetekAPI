@@ -100,6 +100,56 @@ if __name__ == "__main__":
 
 Полный пример с просмотром WebRTC-потока домофона — в [`Examples/run.py`](Examples/run.py).
 
+### TURN для WebRTC-камер
+
+Некоторые облачные камеры принимают WebRTC-сигнализацию, но не передают видео
+через прямое ICE-соединение. Для них нужен доступный TURN-сервер с действующими
+данными входа. `WebRTCViewer` позволяет передать список STUN / TURN-серверов
+через `ice_servers`:
+
+```python
+import json
+import os
+from pathlib import Path
+from SAARubetekAPI import WebRTCViewer
+
+# api уже авторизован; api.house_id соответствует дому выбранной камеры.
+# CAMERA_ID — идентификатор камеры из API, RUBETEK_ICE_CONFIG — путь к приватному
+# JSON-файлу. Файл и реальные данные входа не следует добавлять в Git или логи.
+ice_config = json.loads(Path(os.environ["RUBETEK_ICE_CONFIG"]).read_text())
+viewer = WebRTCViewer(
+    api=api,
+    relay_id=os.environ["CAMERA_ID"],
+    type_device="cameras",
+    ice_servers=ice_config["iceServers"],
+)
+# Дальнейшие viewer.on_track, open() и close() — как в Examples/run.py.
+```
+
+Формат приватного JSON-файла (ниже только пример, без рабочих данных входа):
+
+```json
+{
+  "iceServers": [
+    {
+      "urls": "turn:turn.example.com:3478",
+      "username": "YOUR_TURN_USERNAME",
+      "credential": "YOUR_TURN_PASSWORD"
+    }
+  ]
+}
+```
+
+`urls` может быть строкой или списком URL, поддерживаемых `aiortc.RTCIceServer`.
+Переданный список полностью заменяет стандартную настройку; при необходимости
+добавьте STUN отдельным элементом. Без `ice_servers` остаётся прежний Google
+STUN, а `ice_servers=[]` отключает STUN / TURN. Настройка доступна также для
+домофонов. Данные входа TURN библиотека автоматически не получает.
+
+Это конфигурация `aiortc`, а не браузерный `RTCPeerConnection`: параметр
+`iceTransportPolicy="relay"` здесь не поддерживается. Добавление TURN позволяет
+собирать relay-кандидаты; выбор соединения остаётся за ICE.
+
 ## 📁 Структура проекта
 
 - `SAARubetekAPI/` — исходный код библиотеки

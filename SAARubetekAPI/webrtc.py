@@ -20,7 +20,7 @@ Required extra dependencies (installed on demand):
 import asyncio
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,8 @@ class WebRTCViewer:
                  ws_url: str = None, channel_id: int = None,
                  ping_interval: int = PING_INTERVAL,
                  offer_timeout: int = OFFER_TIMEOUT,
-                 type_device: str = "relays"):
+                 type_device: str = "relays",
+                 ice_servers: Optional[Sequence[Dict[str, Any]]] = None):
         """Initialize the viewer.
 
         Args:
@@ -121,6 +122,11 @@ class WebRTCViewer:
             type_device: Device type used to pick the token endpoint. ``"relays"``
                 (default) for intercoms, any other value (e.g. ``"cameras"``)
                 selects the cameras endpoint.
+            ice_servers: STUN / TURN servers as dictionaries accepted by
+                ``aiortc.RTCIceServer`` (``urls``, optional ``username`` and
+                ``credential``). ``None`` preserves the Google STUN default;
+                an empty sequence disables STUN / TURN. Pass TURN credentials
+                from private configuration for cameras that need a relay.
         """
         self.api = api
         self.relay_id = relay_id
@@ -132,6 +138,7 @@ class WebRTCViewer:
             (CAMERA_CHANNEL_ID if camera else CHANNEL_ID)
         self.ping_interval = ping_interval
         self.offer_timeout = offer_timeout
+        self.ice_servers = ice_servers
 
         self._pc = None
         self._ws = None
@@ -154,9 +161,11 @@ class WebRTCViewer:
         from aiortc import RTCPeerConnection
         from aiortc import RTCConfiguration, RTCIceServer
 
-        pc = RTCPeerConnection(RTCConfiguration(iceServers=[
-            RTCIceServer(urls="stun:stun.l.google.com:19302"),
-        ]))
+        servers = self.ice_servers if self.ice_servers is not None else [
+            {"urls": "stun:stun.l.google.com:19302"},
+        ]
+        pc = RTCPeerConnection(RTCConfiguration(
+            iceServers=[RTCIceServer(**server) for server in servers]))
         self._pc = pc
         # Событие переиспользуется на весь срок жизни вьювера (создаётся в __init__),
         # здесь только сбрасываем его перед новым сеансом, чтобы wait_until_open()
