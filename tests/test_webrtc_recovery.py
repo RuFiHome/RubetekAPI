@@ -288,6 +288,24 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(viewer._owner)
         provider.assert_not_awaited()
 
+    async def test_api_automatically_shares_turn_provider_and_closes_it(self):
+        from SAARubetekAPI import SAARubetekAPI
+        client = object.__new__(SAARubetekAPI)
+        client.session = None
+        provider = SimpleNamespace(close=AsyncMock())
+        with patch('SAARubetekAPI.turn.RuStoreTurnProvider', return_value=provider) as create:
+            first = await client.create_web_rtc_viewer(1)
+            second = await client.create_web_rtc_viewer(2)
+            manual = await client.create_web_rtc_viewer(3, ice_servers=[])
+            disabled = await client.create_web_rtc_viewer(4, auto_turn=False)
+            self.assertIs(first.ice_servers_provider, provider)
+            self.assertIs(second.ice_servers_provider, provider)
+            self.assertIsNone(manual.ice_servers_provider)
+            self.assertIsNone(disabled.ice_servers_provider)
+            create.assert_called_once_with()
+            await client.close()
+            provider.close.assert_awaited_once()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -17,14 +17,15 @@ class WebRTCViewer:
     token is used once, then a fresh token is requested for every new attempt.
     ice_servers overrides ice_servers_provider, including an explicit empty list.
     The async provider is called before each attempt and must return ICE dictionaries.
-    No APK download or third-party request occurs unless a provider is supplied.
+    Native SAARubetekAPI clients share an automatic signed-APK TURN provider.
+    Explicit ICE settings/providers or auto_turn=False override that default.
     """
 
     def __init__(self, api, relay_id, webrtc_token=None, ws_url=None, channel_id=None,
                  ping_interval=8, offer_timeout=20, type_device="relays",
                  ice_servers=None, ice_servers_provider=None, retry_initial=2,
                  retry_max=30, retry_jitter=0.2, disconnected_grace=5,
-                 stable_reset=30):
+                 stable_reset=30, auto_turn=True):
         from .webrtc import Rpc, WS_URL, CAMERA_WS_URL, CHANNEL_ID, CAMERA_CHANNEL_ID
         for name, value in (("ping_interval", ping_interval), ("offer_timeout", offer_timeout),
                             ("retry_initial", retry_initial), ("retry_max", retry_max),
@@ -41,6 +42,10 @@ class WebRTCViewer:
         self.channel_id = channel_id if channel_id is not None else (CAMERA_CHANNEL_ID if camera else CHANNEL_ID)
         self.ping_interval, self.offer_timeout = ping_interval, offer_timeout
         self.ice_servers, self.ice_servers_provider = ice_servers, ice_servers_provider
+        if auto_turn and ice_servers is None and ice_servers_provider is None:
+            get_provider = getattr(api, 'get_turn_provider', None)
+            if callable(get_provider):
+                self.ice_servers_provider = get_provider()
         self.retry_initial, self.retry_max = retry_initial, retry_max
         self.retry_jitter, self.disconnected_grace = retry_jitter, disconnected_grace
         self.stable_reset = stable_reset
@@ -53,6 +58,8 @@ class WebRTCViewer:
         self._close_task = None
         self.opened = False
         self.on_track = None
+        if hasattr(api, '_viewers'):
+            api._viewers.add(self)
 
     async def _attempt(self):
         from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer

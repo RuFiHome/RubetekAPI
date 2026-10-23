@@ -1,8 +1,8 @@
-"""Opt-in extraction of TURN configuration from the official app, never executed.
+"""Extract TURN configuration only from a publisher-authenticated official APK.
 
 The reviewed Android client uses static SDK constants, not an observed TURN
 credential issuance endpoint. No vendor password is embedded in this module.
-RuStore is an external service: extraction is opt-in and can break on app changes.
+RuStore is an external service; unsupported app formats fail closed.
 """
 import asyncio
 from copy import deepcopy
@@ -10,8 +10,14 @@ import re
 import struct
 import tempfile
 import time
+import logging
+import os
+from pathlib import Path
 from urllib.parse import urlsplit
 import zipfile
+from .apk_signature import verify_apk, default_cache_dir, ApkVerificationError
+
+logger = logging.getLogger(__name__)
 
 MAX_APK = 512 * 1024**2
 MAX_DEX = 64 * 1024**2
@@ -147,16 +153,16 @@ class RuStoreTurnProvider:
     """Async ICE provider downloading the public com.fsk.home app from RuStore.
 
     Credentials are static SDK constants, not short-lived account credentials.
-    Cache is memory-only. The app version is checked after refresh_seconds (24h
-    default), and the APK is fetched only if changed. The first download is about 200 MB.
-    Supply apk_path to extract from a trusted local APK without any network use.
-    No APK signature verification is implemented: HTTPS RuStore distribution is
-    trusted. Applications requiring signature pinning should provide a verified
-    local APK instead. Failures do not silently downgrade to public STUN.
+    A signed APK is cached on disk and reverified before reuse. A background task
+    checks the version every refresh_seconds (24h default), downloading only changes.
+    The first download is about 200 MB. Local apk_path also requires verification;
+    the pinned verifier JAR may need a first download. close() stops periodic checks.
+    Invalid updates retain the last authenticated configuration. With no trusted
+    configuration, failures never silently downgrade to public STUN.
     """
 
     def __init__(self, *, apk_path=None, package_name='com.fsk.home', refresh_seconds=86400,
-                 failure_retry_seconds=300):
+                 failure_retry_seconds=300, cache_dir=None, trusted_certificates=None):
         if not re.fullmatch(r'[a-zA-Z][\w]*(?:\.[a-zA-Z][\w]*)+', package_name):
             raise ValueError('Invalid app package')
         if refresh_seconds <= 0 or not refresh_seconds < float('inf'):
@@ -171,23 +177,136 @@ class RuStoreTurnProvider:
         self._version_code = None
         self.failure_retry_seconds = failure_retry_seconds
         self._lock = asyncio.Lock()
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else default_cache_dir()
+        self.trusted_certificates = trusted_certificates
+        self._cache_checked = False
+        self._watch_task = None
+        self._closed = False
+        self.last_update_error = None
 
     async def __call__(self):
+        if self._closed:
+            raise TurnConfigurationError('TURN provider is closed')
         async with self._lock:
+            if self._closed:
+                raise TurnConfigurationError('TURN provider is closed')
+            if self.apk_path is None and not self._cache_checked:
+                self._cache_checked = True
+                cached = self.cache_dir / (self.package_name + '.apk')
+                if cached.exists():
+                    try:
+                        self._servers = await self._read_verified(cached)
+                    except (TurnConfigurationError, ApkVerificationError):
+                        # A corrupt or untrusted cache is never a credential source.
+                        pass
             if self._servers is None or time.monotonic() >= self._valid_until:
                 if time.monotonic() < self._retry_after:
-                    raise TurnConfigurationError('TURN configuration temporarily unavailable; retry later')
-                try:
-                    if self.apk_path is not None:
-                        servers = await asyncio.to_thread(extract_turn_servers, self.apk_path)
+                    if self._servers is None:
+                        raise TurnConfigurationError('TURN configuration temporarily unavailable; retry later')
+                else:
+                    try:
+                        if self.apk_path is not None:
+                            servers = await self._read_verified(self.apk_path)
+                        else:
+                            servers = await self._download()
+                    except (TurnConfigurationError, ApkVerificationError) as error:
+                        cooldown = max(self.failure_retry_seconds, self.refresh_seconds) if isinstance(error, ApkVerificationError) else self.failure_retry_seconds
+                        self._retry_after = time.monotonic() + cooldown
+                        self.last_update_error = type(error).__name__
+                        if self._servers is None:
+                            raise
+                        logger.warning('TURN update rejected/unavailable; keeping last verified configuration (%s)', type(error).__name__)
                     else:
-                        servers = await self._download()
-                except TurnConfigurationError:
-                    self._retry_after = time.monotonic() + self.failure_retry_seconds
-                    raise
-                self._servers = servers
-                self._valid_until = time.monotonic() + self.refresh_seconds
+                        self._servers = servers
+                        self._valid_until = time.monotonic() + self.refresh_seconds
+                        self.last_update_error = None
+            if self._closed:
+                raise TurnConfigurationError('TURN provider is closed')
+            if self._watch_task is None:
+                self._watch_task = asyncio.create_task(self._watch_updates())
             return deepcopy(self._servers)
+
+    async def _watch_updates(self):
+        try:
+            while True:
+                await asyncio.sleep(min(self.refresh_seconds, self.failure_retry_seconds))
+                try:
+                    await self()
+                except (TurnConfigurationError, ApkVerificationError):
+                    # First retrieval reports the error to the caller; later checks
+                    # preserve only previously authenticated configuration.
+                    pass
+        except asyncio.CancelledError:
+            raise
+
+    async def close(self):
+        """Stop periodic checks; the owning API closes its default provider."""
+        self._closed = True
+        if self._watch_task is not None:
+            self._watch_task.cancel()
+            await asyncio.gather(self._watch_task, return_exceptions=True)
+            self._watch_task = None
+
+    async def _read_verified(self, apk, expected_version=None, save=False):
+        try:
+            return await self._read_verified_impl(apk, expected_version, save)
+        except asyncio.CancelledError:
+            raise
+        except (TurnConfigurationError, ApkVerificationError):
+            raise
+        except Exception:
+            raise ApkVerificationError('Invalid or unsupported signed APK') from None
+
+    async def _read_verified_impl(self, apk, expected_version=None, save=False):
+        # Copy the selected base APK into a private immutable-for-this-operation
+        # staging file. Verify and parse that exact same file (no TOCTOU reopen).
+        with tempfile.TemporaryDirectory(prefix='rubetek-signed-apk-') as directory:
+            target = Path(directory) / 'base.apk'
+            with zipfile.ZipFile(apk) as archive:
+                nested = [i for i in archive.infolist() if i.filename == 'base.apk' or i.filename.endswith('/base.apk')]
+                if not nested:
+                    apks = [i for i in archive.infolist() if i.filename.endswith('.apk')]
+                    nested = apks if len(apks) == 1 else []
+                if nested:
+                    if len(nested) != 1 or nested[0].file_size > MAX_APK:
+                        raise ApkVerificationError('Oversized or ambiguous base APK')
+                    with archive.open(nested[0]) as source, target.open('wb') as out:
+                        while chunk := source.read(1024**2):
+                            out.write(chunk)
+                            if out.tell() > MAX_APK:
+                                raise ApkVerificationError('Oversized base APK')
+                else:
+                    if hasattr(apk, 'read'):
+                        apk.seek(0)
+                        with target.open('wb') as out:
+                            while chunk := apk.read(1024**2):
+                                out.write(chunk)
+                                if out.tell() > MAX_APK:
+                                    raise ApkVerificationError('Oversized APK')
+                    else:
+                        import shutil
+                        if Path(apk).stat().st_size > MAX_APK:
+                            raise ApkVerificationError('Oversized APK')
+                        shutil.copyfile(apk, target)
+            identity = await verify_apk(target, package_name=self.package_name,
+                version_code=expected_version, trusted_certificates=self.trusted_certificates,
+                cache_dir=self.cache_dir)
+            version = identity['version']
+            if self._version_code is not None and version < int(self._version_code):
+                raise ApkVerificationError('APK version rollback rejected')
+            servers = await asyncio.to_thread(extract_turn_servers, target)
+            if save:
+                self.cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                fd, name = tempfile.mkstemp(prefix='.verified-apk-', dir=self.cache_dir)
+                try:
+                    with os.fdopen(fd, 'wb') as out, target.open('rb') as source:
+                        while chunk := source.read(1024**2):
+                            out.write(chunk)
+                    Path(name).replace(self.cache_dir / (self.package_name + '.apk'))
+                finally:
+                    Path(name).unlink(missing_ok=True)
+            self._version_code = str(version)
+            return servers
 
     async def _download(self):
         import aiohttp
@@ -203,6 +322,8 @@ class RuStoreTurnProvider:
                 if meta['packageName'] != self.package_name or int(meta['fileSize']) > MAX_APK:
                     raise ValueError('Unexpected package metadata')
                 version = str(meta['versionCode'])
+                if self._version_code is not None and int(version) < int(self._version_code):
+                    raise ApkVerificationError('APK version rollback rejected')
                 if self._servers is not None and self._version_code == version:
                     return deepcopy(self._servers)
                 async with session.post(root + 'download-link', json={'appId': meta['appId'], 'firstInstall': True},
@@ -225,10 +346,10 @@ class RuStoreTurnProvider:
                             if apk.tell() > MAX_APK:
                                 raise ValueError('Oversized APK')
                     apk.seek(0)
-                    servers = await asyncio.to_thread(extract_turn_servers, apk)
-                    self._version_code = version
-                    return servers
+                    return await self._read_verified(apk, expected_version=version, save=True)
         except asyncio.CancelledError:
+            raise
+        except ApkVerificationError:
             raise
         except Exception:
             raise TurnConfigurationError('Could not obtain TURN configuration from the official RuStore app') from None

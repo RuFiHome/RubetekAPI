@@ -4,6 +4,7 @@ import logging
 import ssl
 import secrets
 import string
+import weakref
 
 from types import SimpleNamespace
 
@@ -99,8 +100,10 @@ class SAARubetekAPI:
             self._save_device_id(self.device_id)
 
         self.session = None
+        self._turn_provider = None
+        self._viewers = weakref.WeakSet()
 
-        self.__logger.debug(f"Initialization done. Items=({', '.join(f'{k}={v}' for k, v in vars(self).items())})")
+        self.__logger.debug("Rubetek client initialized")
 
     async def _ensure_session(self) -> ClientSession:
         if self.session and not self.session.closed:
@@ -653,8 +656,9 @@ class SAARubetekAPI:
         Start it with ``asyncio.create_task(viewer.run())`` for reconnection,
         or ``await viewer.open()`` for one session. ``ice_servers`` overrides
         the async ``ice_servers_provider``; extra viewer_options configure retry
-        intervals and timeouts. Requires the extra dependency ``aiortc``
-        (and ``websockets``) to be installed.
+        intervals and timeouts. Install ``saarubetek-api[webrtc]``. By default
+        the API shares a signed-APK automatic TURN provider across viewers;
+        explicit ICE/provider settings or ``auto_turn=False`` override it.
 
         Args:
             relay_id: Numeric id of the device. For intercoms this is the relay
@@ -672,6 +676,9 @@ class SAARubetekAPI:
         viewer = WebRTCViewer(api=self, relay_id=relay_id, webrtc_token=webrtc_token,
                               type_device=type_device, ice_servers=ice_servers,
                               ice_servers_provider=ice_servers_provider, **viewer_options)
+        if not hasattr(self, '_viewers'):
+            self._viewers = weakref.WeakSet()
+        self._viewers.add(viewer)
         if on_track is not None:
             viewer.on_track = on_track
         return viewer
@@ -700,8 +707,20 @@ class SAARubetekAPI:
                                                   **viewer_options)
         return viewer
 
+    def get_turn_provider(self):
+        """Shared, pinned automatic TURN source; network starts only on video use."""
+        if getattr(self, '_turn_provider', None) is None:
+            from .turn import RuStoreTurnProvider
+            self._turn_provider = RuStoreTurnProvider()
+        return self._turn_provider
+
     async def close(self):
-        """Close the underlying HTTP session and release its resources."""
+        """Stop viewers/update checks, then release the HTTP session."""
+        if getattr(self, '_viewers', None):
+            await asyncio.gather(*(viewer.close() for viewer in list(self._viewers)))
+        if getattr(self, '_turn_provider', None) is not None:
+            await self._turn_provider.close()
+            self._turn_provider = None
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None

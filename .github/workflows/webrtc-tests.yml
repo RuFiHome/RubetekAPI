@@ -11,5 +11,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - run: python -m pip install '.[webrtc]'
+      - name: Reproduce the packaged verifier bridge
+        run: |
+          python -c "import asyncio; from SAARubetekAPI.apk_signature import verifier_jar; asyncio.run(verifier_jar('/tmp/rubetek-verifier'))"
+          javac --release 11 -g:none -cp /tmp/rubetek-verifier/apksig-8.13.0.jar SAARubetekAPI/_apkverify/ApkVerifierBridge.java
+          git diff --exit-code -- SAARubetekAPI/_apkverify/ApkVerifierBridge.class
       - run: python -m unittest discover -s tests -v
