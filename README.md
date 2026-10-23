@@ -100,6 +100,65 @@ if __name__ == "__main__":
 
 Полный пример с просмотром WebRTC-потока домофона — в [`Examples/run.py`](Examples/run.py).
 
+## Просмотр видео
+
+После авторизации задайте `api.house_id` и создайте viewer. Для обычной камеры
+используйте `type_device="cameras"`, для домофона — `"relays"`.
+
+```python
+# api уже авторизован. on_track — ваш обработчик входящих медиатреков.
+viewer = await api.create_web_rtc_viewer(
+    relay_id=CAMERA_ID,
+    type_device="cameras",
+    on_track=on_track,
+)
+try:
+    await viewer.run()  # Работает до закрытия или отмены; восстанавливает обрывы.
+finally:
+    await viewer.close()
+    await api.close()
+```
+
+TURN подхватывается автоматически после обычного входа, **Java не требуется**.
+При первом просмотре загружается около 200 МБ официального APK из RuStore;
+APK кэшируется, новая версия проверяется раз в сутки, пока клиент открыт.
+По умолчанию доверяется HTTPS RuStore: подпись издателя и подписанные
+package/version не проверяются. Код APK не исполняется.
+
+Проверку подписи можно включить отдельно:
+
+```python
+api = SAARubetekAPI(verify_turn_apk=True)
+```
+
+Для этого нужна Java 11+ из `JAVA_HOME`/`PATH` либо отдельный runtime:
+`pip install "saarubetek-api[webrtc,apk-runtime]"`. Для самостоятельного provider:
+`RuStoreTurnProvider(verify_signature=True)`. Ошибки проверки не отключают её
+автоматически. Пример чтения кадров — [`Examples/run.py`](Examples/run.py).
+
+### Собственная конфигурация видео
+
+```python
+# private_ice_servers читается из вашей закрытой конфигурации.
+viewer = await api.create_web_rtc_viewer(
+    relay_id=CAMERA_ID,
+    type_device="cameras",
+    ice_servers=private_ice_servers,  # urls, username, credential
+    retry_initial=2,
+    retry_max=30,
+    offer_timeout=30,
+)
+```
+
+Явный `ice_servers` отключает автоматический TURN; пустой список отключает
+внешние ICE-серверы. Также можно передать async `ice_servers_provider` или
+`auto_turn=False` для прежнего Google STUN без скачивания APK.
+`open()` обслуживает одну сессию, `run()` восстанавливает соединения,
+`close()` окончательно останавливает viewer. `watch_video()` тоже возвращает
+незапущенный viewer. Не публикуйте TURN credentials в исходниках и логах.
+
+История изменений, устройство проверки APK и ограничения — в [CHANGELOG](CHANGELOG.md).
+
 ## 📁 Структура проекта
 
 - `SAARubetekAPI/` — исходный код библиотеки

@@ -4,6 +4,7 @@ import logging
 import ssl
 import secrets
 import string
+import weakref
 
 from types import SimpleNamespace
 
@@ -64,8 +65,12 @@ class SAARubetekAPI:
                  device_id: Optional[str] = None,
                  device_id_file: Optional[Path] = None,
                  device_model: str = "Home Assistant",
-                 device_os: str = "Android 16"):
+                 device_os: str = "Android 16",
+                 verify_turn_apk: bool = False):
 
+        if not isinstance(verify_turn_apk, bool):
+            raise ValueError('verify_turn_apk must be a boolean')
+        self._verify_turn_apk = verify_turn_apk
         if logging_level.upper() == "INFO":
             self.__logger.setLevel(logging.INFO)
         elif logging_level.upper() == "WARNING":
@@ -99,8 +104,10 @@ class SAARubetekAPI:
             self._save_device_id(self.device_id)
 
         self.session = None
+        self._turn_provider = None
+        self._viewers = weakref.WeakSet()
 
-        self.__logger.debug(f"Initialization done. Items=({', '.join(f'{k}={v}' for k, v in vars(self).items())})")
+        self.__logger.debug("Rubetek client initialized")
 
     async def _ensure_session(self) -> ClientSession:
         if self.session and not self.session.closed:
@@ -645,12 +652,18 @@ class SAARubetekAPI:
     async def create_web_rtc_viewer(self, relay_id: int,
                                     webrtc_token: str = None,
                                     on_track=None,
-                                    type_device: str = "relays"):
+                                    type_device: str = "relays", *,
+                                    ice_servers=None, ice_servers_provider=None,
+                                    **viewer_options):
         """Create a WebRTC video viewer for a device (without starting it).
 
-        The returned :class:`WebRTCViewer` must be started explicitly via
-        ``await viewer.open()``. Requires the extra dependency ``aiortc``
-        (and ``websockets``) to be installed.
+        Start it with ``asyncio.create_task(viewer.run())`` for reconnection,
+        or ``await viewer.open()`` for one session. ``ice_servers`` overrides
+        the async ``ice_servers_provider``; extra viewer_options configure retry
+        intervals and timeouts. Install ``saarubetek-api[webrtc]``. By default
+        the API shares an automatic TURN provider across viewers, without Java
+        by default (signature checks require ``verify_turn_apk=True``);
+        explicit ICE/provider settings or ``auto_turn=False`` override it.
 
         Args:
             relay_id: Numeric id of the device. For intercoms this is the relay
@@ -666,18 +679,22 @@ class SAARubetekAPI:
         """
         from .webrtc import WebRTCViewer
         viewer = WebRTCViewer(api=self, relay_id=relay_id, webrtc_token=webrtc_token,
-                              type_device=type_device)
+                              type_device=type_device, ice_servers=ice_servers,
+                              ice_servers_provider=ice_servers_provider, **viewer_options)
+        if not hasattr(self, '_viewers'):
+            self._viewers = weakref.WeakSet()
+        self._viewers.add(viewer)
         if on_track is not None:
             viewer.on_track = on_track
         return viewer
 
-    async def watch_video(self, relay_id: int, on_track=None, type_device: str = "relays"):
-        """Open a WebRTC video session with a device and keep it alive.
+    async def watch_video(self, relay_id: int, on_track=None, type_device: str = "relays", *,
+                          ice_servers=None, ice_servers_provider=None, **viewer_options):
+        """Return a viewer (legacy alias of create_web_rtc_viewer).
 
-        Convenience wrapper that creates a :class:`WebRTCViewer` and immediately
-        opens the connection. The returned coroutine keeps the session open until
-        the viewer is closed. Use ``create_web_rtc_viewer`` when you need more
-        control over the lifecycle.
+        This method retains its existing behavior: it does not start network I/O.
+        Start the returned viewer with open() or run(), then await close() in a
+        finally block. The latter stops reconnecting permanently.
 
         Args:
             relay_id: Numeric id of the device (relay id for intercoms, device id
@@ -687,14 +704,29 @@ class SAARubetekAPI:
                 :meth:`get_webrtc_token`). Default ``"relays"`` for intercoms.
 
         Returns:
-            A task that holds open the :class:`WebRTCViewer` session.
+            An unstarted :class:`WebRTCViewer` instance.
         """
         viewer = await self.create_web_rtc_viewer(relay_id, on_track=on_track,
-                                                  type_device=type_device)
+                                                  type_device=type_device, ice_servers=ice_servers,
+                                                  ice_servers_provider=ice_servers_provider,
+                                                  **viewer_options)
         return viewer
 
+    def get_turn_provider(self):
+        """Shared automatic TURN source; signature verification is opt-in."""
+        if getattr(self, '_turn_provider', None) is None:
+            from .turn import RuStoreTurnProvider
+            self._turn_provider = RuStoreTurnProvider(
+                verify_signature=getattr(self, '_verify_turn_apk', False))
+        return self._turn_provider
+
     async def close(self):
-        """Close the underlying HTTP session and release its resources."""
+        """Stop viewers/update checks, then release the HTTP session."""
+        if getattr(self, '_viewers', None):
+            await asyncio.gather(*(viewer.close() for viewer in list(self._viewers)))
+        if getattr(self, '_turn_provider', None) is not None:
+            await self._turn_provider.close()
+            self._turn_provider = None
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
